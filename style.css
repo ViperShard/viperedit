@@ -582,43 +582,63 @@ html.theme-switching *::after {
 [data-theme="dark"] .stage::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); }
 [data-theme="dark"] .stage::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
 
+/* The .page is just a positioning wrapper. Individual .paper panels
+   carry their own shadow, background, and border-radius so the gap
+   between them shows the wallpaper — true Google-Docs-style pagination. */
 .page {
+  position: relative;
   width: var(--page-width);
   min-height: calc(11 * 96px);
+  transform-origin: top center;
+  transition: transform 0.15s;
+}
+
+/* Vertical stack of distinct paper panels with real gaps between them. */
+.paper-stack {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;                         /* space between pages */
+  pointer-events: none;
+}
+.paper {
+  width: 100%;
+  height: calc(11 * 96px);           /* 1056px — US Letter @ 96dpi */
+  flex-shrink: 0;
   background: var(--page-bg);
   color: var(--page-fg);
   border-radius: 4px;
   box-shadow: var(--page-shadow);
-  padding: var(--page-pad-y) var(--page-pad-x);
-  transform-origin: top center;
-  transition: background 0.25s, color 0.25s, transform 0.15s, box-shadow 0.25s;
+  transition: background 0.25s, color 0.25s, box-shadow 0.25s;
 }
 
-/* Glass page variant — makes the page itself translucent.
-   Alpha is high enough (~32%) that large-scale gradient variations in
-   the wallpaper behind (e.g. the vignette's darker corners) don't
-   bleed through as uneven patches. Paired with a wider blur for a
-   more uniform frosted appearance. */
-body[data-page="glass"] .page {
+/* Glass page variant — each paper independently frosted. */
+body[data-page="glass"] .paper {
   background: rgba(255, 255, 255, 0.32);
   backdrop-filter: blur(60px) saturate(200%);
   -webkit-backdrop-filter: blur(60px) saturate(200%);
-  border: 1px solid var(--glass-border);
-  box-shadow: var(--glass-shadow), var(--glass-highlight);
 }
-[data-theme="dark"] body[data-page="glass"] .page {
+[data-theme="dark"] body[data-page="glass"] .paper {
   background: rgba(20, 22, 30, 0.42);
 }
 body[data-page="glass"] .editor { color: var(--fg); }
 
+/* The editor sits on top of the paper stack. Its own padding provides
+   the page margins; text flows continuously over page seams. */
 .editor {
+  position: relative;
+  z-index: 1;
   outline: none;
+  padding: var(--page-pad-y) var(--page-pad-x);
   min-height: calc(11 * 96px - 2 * var(--page-pad-y));
   font-family: var(--font-doc-default);
   font-size: 11pt;
   line-height: 1.55;
   color: var(--page-fg);
   word-wrap: break-word;
+  background: transparent;
 }
 
 .editor:empty::before {
@@ -1662,13 +1682,19 @@ body[data-view="editor"] .view-hub    { display: none !important; }
   body { background: #fff; color: #000; }
   .bg-layer, .bg-tint, .bg-vignette,
   .topbar, .toolbar, .statusbar, .find-bar,
-  .overlay, .slash-menu, .table-picker { display: none !important; }
+  .overlay, .slash-menu, .table-picker,
+  .paper-stack { display: none !important; }     /* real printer handles pagination */
   .stage { padding: 0; overflow: visible; }
   .page {
     box-shadow: none;
     border-radius: 0;
     width: auto;
     min-height: auto;
+    overflow: visible;
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .editor {
     padding: 0.75in 1in;
     background: #fff !important;
     color: #000 !important;

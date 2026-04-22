@@ -43,6 +43,120 @@
     return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
   };
 
+  /* ============================================================
+     Pagination — true Google-Docs-style paged layout.
+
+     The editor stays a single contenteditable, but we insert invisible
+     "gap blocks" (inline margin-top on the block that begins each new
+     page) so text visually lands on successive paper panels. Those
+     panels are rendered in .paper-stack behind the editor with a real
+     24px gap between them, so the wallpaper shows through between pages.
+
+     Geometry per page:
+       top-margin (= pad-y)  +  content-area  +  bottom-margin (= pad-y) = 1056
+       The gap block we inject is  pad-y (bottom margin of previous page)
+                                 + 24  (visible wallpaper gap)
+                                 + pad-y (top margin of next page).
+     ============================================================ */
+  const Pagination = {
+    PAGE_H:   11 * 96,   // 1056 px — US Letter @ 96 dpi
+    PAPER_GAP: 24,       // keep in sync with CSS .paper-stack gap
+
+    _raf: null,
+
+    schedule() {
+      if (this._raf) return;
+      this._raf = requestAnimationFrame(() => {
+        this._raf = null;
+        this.update();
+      });
+    },
+
+    update() {
+      const editor = $('#editor');
+      const page   = $('#page');
+      const stack  = $('#paper-stack');
+      if (!editor || !page || !stack) return;
+
+      // Clear any gap margins we injected last time.
+      editor.querySelectorAll('[data-ve-pagebreak="1"]').forEach((b) => {
+        b.removeAttribute('data-ve-pagebreak');
+        b.style.marginTop = '';
+        if (!b.getAttribute('style')) b.removeAttribute('style');
+      });
+
+      const cs     = getComputedStyle(editor);
+      const padTop = parseFloat(cs.paddingTop)    || 0;
+      const padBot = parseFloat(cs.paddingBottom) || 0;
+      const contentH  = this.PAGE_H - padTop - padBot;    // usable text height per page
+      const gapBlockH = padBot + this.PAPER_GAP + padTop; // vertical space between text regions
+
+      // Walk top-level children. When a block would cross its page's bottom
+      // margin, give it a marginTop of gapBlockH so it slides to the top
+      // content area of the next paper.
+      let pageContentStart = padTop;   // y where the current page's content begins (editor coords)
+      let pageCount = 1;
+
+      let i = 0;
+      while (i < editor.children.length) {
+        const b = editor.children[i];
+
+        // Skip non-layout children (shouldn't be any, but be safe).
+        if (!(b instanceof HTMLElement)) { i++; continue; }
+
+        const bBottom = b.offsetTop + b.offsetHeight;
+        const pageEnd = pageContentStart + contentH;
+
+        if (bBottom > pageEnd && i > 0) {
+          // Push this block to the next page by inflating its top margin.
+          b.setAttribute('data-ve-pagebreak', '1');
+          b.style.marginTop = gapBlockH + 'px';
+          // offsetTop is now shifted by gapBlockH; record new page start.
+          pageContentStart = b.offsetTop;
+          pageCount++;
+        }
+        i++;
+      }
+
+      // Sync the paper stack to the page count.
+      const have = stack.children.length;
+      if (have < pageCount) {
+        const frag = document.createDocumentFragment();
+        for (let j = have; j < pageCount; j++) {
+          const p = document.createElement('div');
+          p.className = 'paper';
+          frag.appendChild(p);
+        }
+        stack.appendChild(frag);
+      } else if (have > pageCount) {
+        for (let j = have - 1; j >= pageCount; j--) {
+          stack.removeChild(stack.children[j]);
+        }
+      }
+
+      // .page height = N pages + (N-1) gaps, so the paper stack fills exactly.
+      page.style.minHeight =
+        (pageCount * this.PAGE_H + Math.max(0, pageCount - 1) * this.PAPER_GAP) + 'px';
+
+      const pc = $('#page-count-stat');
+      if (pc) pc.textContent = `${pageCount} page${pageCount === 1 ? '' : 's'}`;
+    }
+  };
+
+  // When we serialize the editor (save, HTML export), strip the temporary
+  // `data-ve-pagebreak` markers and the inline marginTop we added — those
+  // are render-time-only hints; persisted documents should be clean.
+  function cleanEditorHTML() {
+    const editor = $('#editor');
+    const clone = editor.cloneNode(true);
+    clone.querySelectorAll('[data-ve-pagebreak]').forEach((b) => {
+      b.removeAttribute('data-ve-pagebreak');
+      b.style.marginTop = '';
+      if (!b.getAttribute('style')) b.removeAttribute('style');
+    });
+    return clone.innerHTML;
+  }
+
   // Flip the UI theme without the transitional flash. Transitions on the
   // glass surfaces would otherwise interpolate between wildly different
   // rgba alpha values for ~250 ms and look like a blink.
@@ -206,6 +320,10 @@
       // Sync the font-family dropdown.
       const fs = $('#font-family');
       if (fs && s.fontFamily && fs.value !== s.fontFamily) fs.value = s.fontFamily;
+
+      // Any setting that changes block heights or page margins affects
+      // pagination. Recompute after layout settles.
+      if (typeof Pagination !== 'undefined') Pagination.schedule();
     }
   };
 
@@ -282,7 +400,7 @@
       const d = this.current();
       if (!d) return;
       d.title = $('#doc-title').value || 'Untitled document';
-      d.html  = $('#editor').innerHTML;
+      d.html  = cleanEditorHTML();
       d.updatedAt = Date.now();
       Persist.saveDoc(d);
     },
@@ -434,7 +552,7 @@
       try { document.execCommand('defaultParagraphSeparator', false, 'p'); } catch {}
 
       // Events
-      on(this.el, 'input', () => { this.scheduleSave(); this.updateCounts(); this.checkSlash(); });
+      on(this.el, 'input', () => { this.scheduleSave(); this.updateCounts(); this.checkSlash(); Pagination.schedule(); });
       on(this.el, 'keyup',  () => UI.refreshToolbar());
       on(this.el, 'mouseup', () => UI.refreshToolbar());
       on(document, 'selectionchange', () => {
@@ -490,6 +608,7 @@
       Docs.updateDocCount();
       $('#doc-name-chip').textContent = doc.title || 'Untitled';
       this.updatePresetBadge();
+      Pagination.schedule();
     },
 
     updatePresetBadge() {
@@ -1411,7 +1530,7 @@
   table { border-collapse: collapse; } th, td { border: 1px solid #ddd; padding: 6px 10px; }
 </style></head><body>
 <h1>${esc(title)}</h1>
-${Editor.el.innerHTML}
+${cleanEditorHTML()}
 </body></html>`;
         blob = new Blob([html], { type: 'text/html;charset=utf-8' });
         ext = 'html';
