@@ -1,0 +1,28 @@
+# macOS / Windows junk
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Editor / IDE state
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs and runtime
+*.log
+npm-debug.log*
+yarn-error.log
+
+# Dependencies (just in case we add any later)
+node_modules/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# OS-level thumbnails
+._*

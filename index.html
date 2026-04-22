@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ViperEdit</title>
+  <link rel="stylesheet" href="style.css" />
+  <link id="fonts-link" rel="stylesheet" href="" />
+</head>
+<body data-view="hub">
+
+  <!-- Background layers (shared between hub & editor views) -->
+  <div id="bg-layer" class="bg-layer"></div>
+  <div class="bg-tint"></div>
+  <div class="bg-vignette"></div>
+
+  <!-- ============================================================ -->
+  <!-- HUB VIEW — ViperHub landing page                              -->
+  <!-- ============================================================ -->
+  <div id="view-hub" class="view-hub">
+    <header class="hub-topbar glass-bar">
+      <button class="brand-launcher" id="brand-launcher-hub" title="ViperShard apps" aria-label="ViperShard apps">
+        <span class="vs-logo-wrap">
+          <img src="logo.png" alt="" class="vs-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline-block';" />
+          <svg class="vs-logo-fallback" viewBox="0 0 32 32" aria-hidden="true" style="display:none;">
+            <defs>
+              <linearGradient id="vg-hub" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#a78bfa"/>
+                <stop offset="1" stop-color="#6d28d9"/>
+              </linearGradient>
+            </defs>
+            <path d="M4 6 L16 26 L28 6 L22 6 L16 16 L10 6 Z" fill="url(#vg-hub)"/>
+          </svg>
+        </span>
+        <span class="brand-name">Viper<span class="thin">Edit</span></span>
+      </button>
+
+      <div class="hub-search-wrap">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input id="hub-search" type="text" placeholder="Search documents and templates…" autocomplete="off" />
+      </div>
+
+      <div class="topbar-right">
+        <button id="hub-btn-background" class="icon-btn" title="Background">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+        </button>
+        <button id="hub-btn-settings" class="icon-btn" title="Settings">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+        <button id="hub-btn-theme" class="icon-btn" title="Toggle theme">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+        <button id="profile-btn-hub" class="profile-btn" title="Account">
+          <img class="profile-pic" id="profile-pic-hub" alt="" hidden />
+          <svg class="profile-guest-icon" id="profile-guest-hub" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="hub-main">
+      <section class="hub-hero">
+        <h1 class="hub-hero-title">ViperHub</h1>
+        <p class="hub-hero-sub">Pick a template, or open one of your documents.</p>
+      </section>
+
+      <section class="hub-section">
+        <div class="hub-section-head">
+          <h3>Start a new document</h3>
+          <span class="hub-section-sub">Each template includes a matching font &amp; page preset.</span>
+        </div>
+        <div class="hub-templates-row" id="hub-templates-row"></div>
+      </section>
+
+      <section class="hub-section">
+        <div class="hub-section-head">
+          <h3>Recent documents</h3>
+          <span class="hub-section-sub" id="hub-docs-count"></span>
+        </div>
+        <div class="hub-docs-grid" id="hub-docs-grid"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- EDITOR VIEW                                                    -->
+  <!-- ============================================================ -->
+  <div id="view-editor" class="view-editor">
+
+  <!-- ============================================================ -->
+  <!-- TOP BAR                                                        -->
+  <!-- ============================================================ -->
+  <header class="topbar glass-bar">
+    <button class="brand-launcher brand-launcher-sm" id="brand-launcher-editor" title="ViperShard apps" aria-label="ViperShard apps">
+      <span class="vs-logo-wrap">
+        <img src="logo.png" alt="" class="vs-logo" onerror="this.style.display='none'; this.nextElementSibling.style.display='inline-block';" />
+        <svg class="vs-logo-fallback" viewBox="0 0 32 32" aria-hidden="true" style="display:none;">
+          <defs>
+            <linearGradient id="vg" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#c4b5fd"/>
+              <stop offset="1" stop-color="#6d28d9"/>
+            </linearGradient>
+          </defs>
+          <path d="M4 6 L16 26 L28 6 L22 6 L16 16 L10 6 Z" fill="url(#vg)"/>
+        </svg>
+      </span>
+    </button>
+
+    <button id="btn-hub" class="chip-btn" title="Back to ViperHub">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+      <span id="doc-name-chip">Hub</span>
+      <span id="preset-badge" class="preset-badge" hidden title="Document preset active">◆</span>
+    </button>
+
+    <input id="doc-title" class="doc-title" type="text" value="Untitled document" spellcheck="false" />
+
+    <div class="topbar-right">
+      <span id="save-status" class="save-status">Saved</span>
+
+      <button id="btn-palette" class="icon-btn" title="Search commands (Ctrl+Shift+P)" aria-label="Command palette">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+      </button>
+      <button id="btn-find" class="icon-btn" title="Find & replace (Ctrl+F)" aria-label="Find">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M4 12h10"/><path d="M4 18h16"/></svg>
+      </button>
+      <button id="btn-background" class="icon-btn" title="Background" aria-label="Change background">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+      </button>
+      <button id="btn-focus" class="icon-btn" title="Focus mode (F11)" aria-label="Focus mode">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V5a1 1 0 0 1 1-1h4"/><path d="M20 9V5a1 1 0 0 0-1-1h-4"/><path d="M4 15v4a1 1 0 0 0 1 1h4"/><path d="M20 15v4a1 1 0 0 1-1 1h-4"/></svg>
+      </button>
+      <button id="btn-settings" class="icon-btn" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+      <button id="btn-theme" class="icon-btn" title="Toggle theme" aria-label="Toggle theme">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+
+      <button id="profile-btn-editor" class="profile-btn" title="Account">
+        <img class="profile-pic" id="profile-pic-editor" alt="" hidden />
+        <svg class="profile-guest-icon" id="profile-guest-editor" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      </button>
+
+      <div class="menu-wrap">
+        <button id="btn-file" class="icon-btn" title="File menu" aria-label="File menu">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
+        </button>
+        <div id="file-menu" class="menu-dropdown glass-panel" hidden>
+          <button data-action="hub">Open ViperHub…</button>
+          <button data-action="new">New blank document</button>
+          <button data-action="open">Open file…</button>
+          <hr/>
+          <button data-action="download-html">Download as .html</button>
+          <button data-action="download-md">Download as .md</button>
+          <button data-action="download-txt">Download as .txt</button>
+          <button data-action="print">Print / Save as PDF</button>
+          <hr/>
+          <button data-action="save-preset">Save settings to this document</button>
+          <button data-action="clear-preset">Clear document preset</button>
+          <hr/>
+          <button data-action="duplicate">Duplicate document</button>
+          <button data-action="rename">Rename document</button>
+          <button data-action="delete">Delete document</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============================================================ -->
+  <!-- TOOLBAR                                                        -->
+  <!-- ============================================================ -->
+  <div class="toolbar glass-bar" role="toolbar" aria-label="Formatting">
+
+    <div class="tool-group">
+      <button class="tb-btn" data-cmd="undo" title="Undo (Ctrl+Z)">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/></svg>
+      </button>
+      <button class="tb-btn" data-cmd="redo" title="Redo (Ctrl+Y)">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 15-6.7L21 13"/></svg>
+      </button>
+    </div>
+
+    <div class="tool-group">
+      <select id="block-style" class="tb-select" title="Paragraph style">
+        <option value="p">Normal text</option>
+        <option value="h1">Title · H1</option>
+        <option value="h2">Heading · H2</option>
+        <option value="h3">Subheading · H3</option>
+        <option value="h4">H4</option>
+        <option value="blockquote">Quote</option>
+        <option value="pre">Code block</option>
+      </select>
+
+      <select id="font-family" class="tb-select tb-select-wide" title="Font"></select>
+
+      <select id="font-size" class="tb-select tb-select-sm" title="Font size">
+        <option>8</option><option>10</option><option>11</option><option>12</option>
+        <option selected>14</option><option>16</option><option>18</option><option>20</option>
+        <option>24</option><option>28</option><option>32</option><option>40</option>
+        <option>48</option><option>64</option><option>72</option>
+      </select>
+    </div>
+
+    <div class="tool-group">
+      <button class="tb-btn" data-cmd="bold" title="Bold (Ctrl+B)"><b>B</b></button>
+      <button class="tb-btn tb-italic" data-cmd="italic" title="Italic (Ctrl+I)"><i>I</i></button>
+      <button class="tb-btn" data-cmd="underline" title="Underline (Ctrl+U)"><u>U</u></button>
+      <button class="tb-btn" data-cmd="strikeThrough" title="Strikethrough"><s>S</s></button>
+      <button class="tb-btn tb-tiny" data-cmd="superscript" title="Superscript">x²</button>
+      <button class="tb-btn tb-tiny" data-cmd="subscript" title="Subscript">x₂</button>
+
+      <label class="tb-color" title="Text color">
+        <span>A</span>
+        <input type="color" data-cmd="foreColor" value="#1c1c1e" />
+        <span class="tb-color-bar" id="fore-bar" style="background:#1c1c1e"></span>
+      </label>
+      <label class="tb-color" title="Highlight color">
+        <span>H</span>
+        <input type="color" data-cmd="hiliteColor" value="#ffef5c" />
+        <span class="tb-color-bar" id="hilite-bar" style="background:#ffef5c"></span>
+      </label>
+    </div>
+
+    <div class="tool-group">
+      <button class="tb-btn" data-cmd="insertUnorderedList" title="Bulleted list">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="1.2"/><circle cx="5" cy="12" r="1.2"/><circle cx="5" cy="18" r="1.2"/><path d="M10 6h10"/><path d="M10 12h10"/><path d="M10 18h10"/></svg>
+      </button>
+      <button class="tb-btn" data-cmd="insertOrderedList" title="Numbered list">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6h10"/><path d="M10 12h10"/><path d="M10 18h10"/><text x="2" y="8" font-size="7" fill="currentColor" stroke="none">1</text><text x="2" y="14" font-size="7" fill="currentColor" stroke="none">2</text><text x="2" y="20" font-size="7" fill="currentColor" stroke="none">3</text></svg>
+      </button>
+      <button class="tb-btn" data-action="checklist" title="Checklist">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="6" height="6" rx="1"/><path d="M4.5 7l1.2 1.2L8 5.8"/><rect x="3" y="14" width="6" height="6" rx="1"/><path d="M12 7h9"/><path d="M12 17h9"/></svg>
+      </button>
+      <button class="tb-btn" data-cmd="outdent" title="Decrease indent">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 6H9"/><path d="M21 12H11"/><path d="M21 18H9"/><path d="M7 8l-4 4 4 4"/></svg>
+      </button>
+      <button class="tb-btn" data-cmd="indent" title="Increase indent">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h12"/><path d="M3 12h10"/><path d="M3 18h12"/><path d="M17 8l4 4-4 4"/></svg>
+      </button>
+    </div>
+
+    <div class="tool-group">
+      <button class="tb-btn" data-cmd="justifyLeft" title="Align left">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M3 12h12"/><path d="M3 18h16"/></svg>
+      </button>
+      <button class="tb-btn" data-cmd="justifyCenter" title="Align center">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M6 12h12"/><path d="M4 18h16"/></svg>
+      </button>
+      <button class="tb-btn" data-cmd="justifyRight" title="Align right">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M9 12h12"/><path d="M5 18h16"/></svg>
+      </button>
+      <button class="tb-btn" data-cmd="justifyFull" title="Justify">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/></svg>
+      </button>
+    </div>
+
+    <div class="tool-group">
+      <button class="tb-btn" data-action="link" title="Insert link (Ctrl+K)">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 1 0-7.07-7.07L11 5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 1 0 7.07 7.07L13 19"/></svg>
+      </button>
+      <button class="tb-btn" data-action="image" title="Insert image">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+      </button>
+      <button class="tb-btn" id="btn-table" data-action="table" title="Insert table">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M3 15h18"/><path d="M9 4v16"/><path d="M15 4v16"/></svg>
+      </button>
+      <button class="tb-btn" data-action="hr" title="Horizontal rule">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 12h18"/></svg>
+      </button>
+      <button class="tb-btn" data-cmd="removeFormat" title="Clear formatting">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3"/><path d="M5 20h6"/><path d="M13 4L8 20"/><path d="M15 15l6 6"/><path d="M21 15l-6 6"/></svg>
+      </button>
+    </div>
+
+    <div class="tool-group tool-group-end">
+      <button class="tb-btn tb-tiny" data-action="zoom-out" title="Zoom out">−</button>
+      <span id="zoom-val" class="zoom-val">100%</span>
+      <button class="tb-btn tb-tiny" data-action="zoom-in" title="Zoom in">+</button>
+    </div>
+
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- FIND / REPLACE BAR                                             -->
+  <!-- ============================================================ -->
+  <div id="find-bar" class="find-bar glass-bar" hidden>
+    <svg class="find-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+    <input id="find-input" class="find-input" placeholder="Find…" />
+    <span id="find-count" class="find-count">0/0</span>
+    <button class="icon-btn icon-btn-sm" id="find-prev" title="Previous (Shift+Enter)">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg>
+    </button>
+    <button class="icon-btn icon-btn-sm" id="find-next" title="Next (Enter)">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+    </button>
+    <span class="find-divider"></span>
+    <input id="replace-input" class="find-input" placeholder="Replace…" />
+    <button id="replace-one" class="pill-btn">Replace</button>
+    <button id="replace-all" class="pill-btn">All</button>
+    <span class="find-divider"></span>
+    <label class="find-opt" title="Match case"><input type="checkbox" id="find-case" /> Aa</label>
+    <label class="find-opt" title="Regex"><input type="checkbox" id="find-regex" /> .*</label>
+    <button class="icon-btn icon-btn-sm" id="find-close" title="Close (Esc)">
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12"/><path d="M18 6L6 18"/></svg>
+    </button>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- PAGE / EDITOR STAGE                                            -->
+  <!-- ============================================================ -->
+  <main class="stage" id="stage">
+    <article class="page" id="page">
+      <div id="editor" class="editor" contenteditable="true" spellcheck="true" role="textbox" aria-multiline="true" aria-label="Document editor"></div>
+    </article>
+  </main>
+
+  <!-- ============================================================ -->
+  <!-- STATUS BAR                                                     -->
+  <!-- ============================================================ -->
+  <footer class="statusbar glass-bar">
+    <span id="word-count">0 words</span>
+    <span class="dot">·</span>
+    <span id="char-count">0 characters</span>
+    <span class="dot">·</span>
+    <span id="read-time">0 min read</span>
+    <span class="spacer"></span>
+    <span id="doc-count" class="subtle">1 document</span>
+    <span class="dot">·</span>
+    <span class="hint">⌘⇧P palette · ⌘F find · ⌘S download · ⌘K link · ⌘/ slash commands</span>
+  </footer>
+
+  </div>
+  <!-- /view-editor -->
+
+  <!-- ============================================================ -->
+  <!-- OVERLAYS (shared between hub & editor views)                   -->
+  <!-- ============================================================ -->
+
+  <!-- Command palette -->
+  <div id="overlay-palette" class="overlay" hidden>
+    <div class="palette glass-panel">
+      <div class="palette-head">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input id="palette-input" type="text" placeholder="Type a command or search…" autocomplete="off" />
+      </div>
+      <div id="palette-list" class="palette-list"></div>
+      <div class="palette-foot">
+        <span><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+        <span><kbd>⏎</kbd> run</span>
+        <span><kbd>Esc</kbd> close</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings -->
+  <div id="overlay-settings" class="overlay" hidden>
+    <div class="sheet glass-panel">
+      <header class="sheet-head">
+        <h2>Settings</h2>
+        <input id="settings-search" type="text" placeholder="Search settings…" />
+        <button id="btn-settings-close" class="icon-btn">×</button>
+      </header>
+      <div id="settings-list" class="sheet-body"></div>
+    </div>
+  </div>
+
+  <!-- Background picker -->
+  <div id="overlay-background" class="overlay" hidden>
+    <div class="sheet glass-panel sheet-sm">
+      <header class="sheet-head">
+        <h2>Background</h2>
+        <button id="btn-bg-close" class="icon-btn">×</button>
+      </header>
+      <div class="bg-body">
+        <div class="bg-actions">
+          <button class="pill-btn pill-btn-primary" id="btn-bg-upload">Upload image…</button>
+          <button class="pill-btn" id="btn-bg-clear">Clear</button>
+        </div>
+        <div class="bg-grid" id="bg-presets"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ViperShard app launcher -->
+  <div id="app-launcher" class="app-launcher glass-panel" hidden>
+    <div class="al-head">
+      <span class="al-title">ViperShard</span>
+      <span class="al-sub">Apps</span>
+    </div>
+    <div class="al-grid" id="al-grid"></div>
+    <div class="al-foot" id="al-foot">More apps coming soon.</div>
+  </div>
+
+  <!-- Profile / sign-in menu -->
+  <div id="profile-menu" class="profile-menu glass-panel" hidden>
+    <div class="pm-signed-out" id="pm-signed-out">
+      <div class="pm-hero">
+        <div class="pm-hero-title">Sign in to ViperEdit</div>
+        <div class="pm-hero-desc">Each account has its own documents, wallpaper, and settings — all stored locally in this browser.</div>
+      </div>
+      <div id="auth-slot" class="auth-slot"></div>
+      <div class="pm-hint">Your documents stay on this device. Signing in separates them from other people who use this browser.</div>
+    </div>
+    <div class="pm-signed-in" id="pm-signed-in" hidden>
+      <div class="pm-identity">
+        <img class="pm-pic" id="pm-pic" alt="" />
+        <div class="pm-id-text">
+          <div class="pm-name" id="pm-name"></div>
+          <div class="pm-email" id="pm-email"></div>
+        </div>
+      </div>
+      <div class="pm-storage" id="pm-storage">Storage: calculating…</div>
+      <button class="pill-btn" id="pm-signout">Sign out</button>
+    </div>
+  </div>
+
+  <!-- Slash menu -->
+  <div id="slash-menu" class="slash-menu glass-panel" hidden></div>
+
+  <!-- Table size picker -->
+  <div id="table-picker" class="table-picker glass-panel" hidden>
+    <div class="table-grid" id="table-grid"></div>
+    <div class="table-label" id="table-label">0 × 0</div>
+  </div>
+
+  <input type="file" id="file-input" accept=".html,.htm,.txt,.md" hidden />
+  <input type="file" id="bg-input" accept="image/*" hidden />
+
+  <script src="config.js"></script>
+  <script src="apps.js"></script>
+  <script src="auth.js"></script>
+  <script src="idb.js"></script>
+  <script src="fonts.js"></script>
+  <script src="templates.js"></script>
+  <script src="editor.js"></script>
+</body>
+</html>
