@@ -594,13 +594,20 @@ html.theme-switching *::after {
   transition: background 0.25s, color 0.25s, transform 0.15s, box-shadow 0.25s;
 }
 
-/* Glass page variant — makes the page itself translucent */
+/* Glass page variant — makes the page itself translucent.
+   Alpha is high enough (~32%) that large-scale gradient variations in
+   the wallpaper behind (e.g. the vignette's darker corners) don't
+   bleed through as uneven patches. Paired with a wider blur for a
+   more uniform frosted appearance. */
 body[data-page="glass"] .page {
-  background: rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(40px) saturate(180%);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  background: rgba(255, 255, 255, 0.32);
+  backdrop-filter: blur(60px) saturate(200%);
+  -webkit-backdrop-filter: blur(60px) saturate(200%);
   border: 1px solid var(--glass-border);
   box-shadow: var(--glass-shadow), var(--glass-highlight);
+}
+[data-theme="dark"] body[data-page="glass"] .page {
+  background: rgba(20, 22, 30, 0.42);
 }
 body[data-page="glass"] .editor { color: var(--fg); }
 

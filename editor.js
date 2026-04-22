@@ -194,9 +194,12 @@
       document.documentElement.style.setProperty('--page-pad-y', mapMargin[s.pageMargins] || '96px');
       document.documentElement.style.setProperty('--page-pad-x', mapMargin[s.pageMargins] || '96px');
 
-      // Zoom
+      // Zoom — only actually apply a transform when zoom != 100%.
+      // A transform (even scale(1)) puts the element on its own compositor
+      // layer, which on some browsers distorts how backdrop-filter samples
+      // the background behind the glass page and causes visible artifacts.
       const page = $('#page');
-      if (page) page.style.transform = `scale(${s.zoom / 100})`;
+      if (page) page.style.transform = s.zoom === 100 ? '' : `scale(${s.zoom / 100})`;
       const zv = $('#zoom-val');
       if (zv) zv.textContent = s.zoom + '%';
 
