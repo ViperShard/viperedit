@@ -211,6 +211,17 @@ kbd {
   position: relative;
 }
 
+/* Disable every transition/animation briefly while the theme is flipping so
+   the glass surfaces don't blink through an intermediate semi-transparent
+   frame as their background colors interpolate. */
+html.theme-switching,
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  transition: none !important;
+  animation: none !important;
+}
+
 .glass-panel {
   background: var(--glass-bg-strong);
   border-radius: var(--radius-xl);

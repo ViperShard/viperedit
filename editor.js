@@ -43,6 +43,25 @@
     return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
   };
 
+  // Flip the UI theme without the transitional flash. Transitions on the
+  // glass surfaces would otherwise interpolate between wildly different
+  // rgba alpha values for ~250 ms and look like a blink.
+  function toggleTheme() {
+    const html = document.documentElement;
+    const cur = html.getAttribute('data-theme') || 'light';
+    const next = cur === 'dark' ? 'light' : 'dark';
+    html.classList.add('theme-switching');
+    // Force a reflow so the class takes effect before the attribute change.
+    void html.offsetHeight;
+    html.setAttribute('data-theme', next);
+    // Remove after the browser has painted the new theme.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      html.classList.remove('theme-switching');
+    }));
+    if (window.VE_IDB && Persist && Persist.cache) Persist.cache.theme = next;
+    Persist.saveTheme(next);
+  }
+
   // Resize + re-encode an image file to keep background/inline images
   // inexpensive to store in IndexedDB. Returns a data URL.
   function compressImageFile(file, maxDim = 2048, quality = 0.85) {
@@ -662,12 +681,7 @@
       });
 
       // Theme
-      on($('#btn-theme'), 'click', () => {
-        const cur = document.documentElement.getAttribute('data-theme') || 'dark';
-        const next = cur === 'dark' ? 'light' : 'dark';
-        document.documentElement.setAttribute('data-theme', next);
-        Persist.saveTheme(next);
-      });
+      on($('#btn-theme'), 'click', () => toggleTheme());
 
       // File menu
       const fileMenu = $('#file-menu');
@@ -1591,12 +1605,7 @@ ${Editor.el.innerHTML}
       // Hub-specific topbar buttons
       on($('#hub-btn-background'), 'click', () => Background.open());
       on($('#hub-btn-settings'),   'click', () => SettingsUI.open());
-      on($('#hub-btn-theme'),      'click', () => {
-        const cur = document.documentElement.getAttribute('data-theme') || 'light';
-        const next = cur === 'dark' ? 'light' : 'dark';
-        document.documentElement.setAttribute('data-theme', next);
-        Persist.saveTheme(next);
-      });
+      on($('#hub-btn-theme'),      'click', () => toggleTheme());
     },
 
     show() {
@@ -2129,21 +2138,32 @@ ${Editor.el.innerHTML}
      ============================================================ */
   function smartQuotesHandler(e) {
     if (!Settings.get('smartQuotes')) return;
-    if (e.data === '"' || e.data === "'") {
-      const sel = window.getSelection();
-      if (!sel.rangeCount) return;
-      const r = sel.getRangeAt(0);
-      const n = r.startContainer;
-      if (n.nodeType !== 3) return;
-      const before = n.textContent[r.startOffset - 2] || '';
-      const open = !before || /\s|[\(\[\{]/.test(before);
-      const replacement = e.data === '"' ? (open ? '“' : '”') : (open ? '‘' : '’');
-      n.textContent = n.textContent.slice(0, r.startOffset - 1) + replacement + n.textContent.slice(r.startOffset);
-      const nr = document.createRange();
-      nr.setStart(n, r.startOffset);
-      nr.collapse(true);
-      sel.removeAllRanges(); sel.addRange(nr);
+    if (e.inputType !== 'insertText') return;
+    if (e.data !== '"' && e.data !== "'") return;
+
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return;
+    const r = sel.getRangeAt(0);
+
+    // Look at the character immediately before the caret (in any text node
+    // that happens to be there). Elements with a nested structure still work
+    // because we only care about the character under startContainer/offset.
+    let before = '';
+    const n = r.startContainer;
+    if (n.nodeType === 3 && r.startOffset > 0) {
+      before = n.textContent.charAt(r.startOffset - 1);
     }
+
+    const open = !before || /\s|[\(\[\{]/.test(before);
+    const replacement = e.data === '"' ? (open ? '“' : '”')   // “ ”
+                                       : (open ? '‘' : '’');  // ‘ ’
+
+    // Cancel the browser's native insertion and insert the smart quote
+    // via execCommand. This keeps undo history intact and lets the
+    // browser manage the caret position — no manual range math needed.
+    e.preventDefault();
+    try { document.execCommand('insertText', false, replacement); }
+    catch { /* older browser — fall back to letting the plain quote through */ }
   }
 
   /* ============================================================
