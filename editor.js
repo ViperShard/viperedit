@@ -93,6 +93,42 @@
     m.remove();
   }
 
+  // Walk backward from (node, offset) looking for whitespace, without
+  // crossing the boundary of `root`. Returns { node, offset } if a
+  // whitespace character is found within `limit` scanned characters,
+  // or null if none exists nearby. Split points land AFTER the
+  // whitespace so the trailing space stays on the previous page.
+  function findWordBoundaryBefore(node, offset, root, limit = 120) {
+    let cur = node;
+    let curOffset = offset;
+    let scanned = 0;
+    while (cur && scanned < limit) {
+      if (cur.nodeType === 3) {
+        const text = cur.nodeValue || '';
+        let i = Math.min(curOffset, text.length);
+        while (i > 0 && scanned < limit) {
+          if (/\s/.test(text.charAt(i - 1))) {
+            return { node: cur, offset: i };
+          }
+          i--;
+          scanned++;
+        }
+        curOffset = i;
+      }
+      // Step to the previous node in document order within `root`.
+      let prev = cur.previousSibling;
+      if (prev) {
+        while (prev.lastChild) prev = prev.lastChild;
+        cur = prev;
+        curOffset = cur.nodeType === 3 ? (cur.nodeValue || '').length : 0;
+      } else {
+        cur = cur.parentNode;
+        if (!cur || cur === root || !root.contains(cur)) break;
+      }
+    }
+    return null;
+  }
+
   // Split a block-level element at the given viewport Y coordinate.
   // Returns the newly-created "second half" element, or null if the
   // split couldn't be done (off-screen, unsupported, etc.).
@@ -116,6 +152,13 @@
       return null;
     }
     if (!node || !block.contains(node)) return null;
+
+    // Snap to the nearest word boundary BEFORE the found position so we
+    // don't cut a word in half. If there's no whitespace within ~120
+    // characters (e.g. a URL or a stream of no-space text), fall back to
+    // the mid-character split — still better than overflowing.
+    const snap = findWordBoundaryBefore(node, offset, block);
+    if (snap) { node = snap.node; offset = snap.offset; }
 
     const range = document.createRange();
     try {
@@ -968,7 +1011,7 @@
       on(this.el, 'keydown', (e) => {
         if (e.key === 'Tab') {
           e.preventDefault();
-          document.execCommand(e.shiftKey ? 'outdent' : 'indent');
+          this._indentBlock(e.shiftKey ? -1 : 1);
           this.scheduleSave();
           Pagination.schedule();
           return;
@@ -1139,6 +1182,34 @@
       this.updateCounts();
     },
 
+    // Indent (Tab) / outdent (Shift+Tab) the block containing the caret.
+    // For list items we defer to execCommand since that nests the list
+    // naturally. For every other block we set an explicit margin-left —
+    // Chrome's built-in "indent" would wrap the block in a <blockquote>,
+    // which our blockquote styling paints purple (looks like a "blob").
+    _indentBlock(direction) {
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return;
+      const r = sel.getRangeAt(0);
+      let block = r.startContainer;
+      if (block.nodeType === 3) block = block.parentNode;
+      const BLOCK_TAGS = /^(?:P|H[1-6]|LI|DIV|PRE|BLOCKQUOTE)$/i;
+      while (block && block !== this.el) {
+        if (block.tagName && BLOCK_TAGS.test(block.tagName)) break;
+        block = block.parentNode;
+      }
+      if (!block || block === this.el) return;
+      if (block.tagName === 'LI') {
+        document.execCommand(direction > 0 ? 'indent' : 'outdent');
+        return;
+      }
+      const step = 40;
+      const current = parseFloat(block.style.marginLeft) || 0;
+      const next = Math.max(0, current + direction * step);
+      block.style.marginLeft = next ? next + 'px' : '';
+      if (!block.getAttribute('style')) block.removeAttribute('style');
+    },
+
     insertHTML(html) {
       this.el.focus();
       document.execCommand('insertHTML', false, html);
@@ -1266,16 +1337,24 @@
       // Clicking a trigger opens the popup anchored under it and
       // remembers which command the popup is for.
       this._triggers.forEach((trigger) => {
-        // Save the editor's text selection the moment the user presses the
-        // swatch — before any focus change or native-picker click can
-        // collapse it. Runs on mousedown so it fires ahead of the click.
-        on(trigger, 'mousedown', () => this._saveSelection());
         const btn = trigger.querySelector('.tb-colordd-btn');
+        // preventDefault on mousedown stops the button from stealing focus
+        // from the editor — keeps the text selection intact so execCommand
+        // applies to the right range. We also save the range as a safety
+        // net in case another handler still collapses it.
+        on(btn, 'mousedown', (e) => {
+          e.preventDefault();
+          this._saveSelection();
+        });
         on(btn, 'click', (e) => {
           e.stopPropagation();
           this.open(trigger, trigger.dataset.cmd);
         });
       });
+
+      // preventDefault on the popup itself so any mousedown inside it
+      // (swatches, None, Custom…) also doesn't steal editor focus.
+      on(popup, 'mousedown', (e) => e.preventDefault());
 
       // Swatch selection
       on(grid, 'click', (e) => {

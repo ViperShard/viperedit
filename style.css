@@ -547,6 +547,9 @@ html.theme-switching *::after {
   gap: 6px;
   animation: pop-in 0.12s ease-out;
 }
+/* Without this, our display:flex beats the UA [hidden]→display:none and the
+   popup renders at (0, 0) on every page load. */
+.color-popup[hidden] { display: none; }
 .cp-none,
 .cp-custom {
   background: transparent;
