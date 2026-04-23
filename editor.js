@@ -44,29 +44,28 @@
   };
 
   /* ============================================================
-     Pagination — true Google-Docs-style paged layout.
+     Pagination — Google-Docs-style paged layout.
 
-     Behind the single contenteditable we render N distinct paper panels
-     with a 24 px gap between them (the wallpaper shows through the gap).
+     DOM model:
+         <div id="editor" contenteditable>
+           <div class="paper"> ... blocks (p, h1, ...) ... </div>
+           <div class="paper"> ... </div>
+         </div>
 
-     After every input we:
-       1. Un-split any blocks we split last time (merge `[data-ve-split]`
-          elements back into their previous sibling).
-       2. Clear any `[data-ve-pagebreak]` margin-tops we injected.
-       3. Walk the editor's top-level blocks:
-            - If a block fits on the current page, keep walking.
-            - If it starts on this page but would cross the page's bottom
-              margin AND it's no taller than a page, shove it whole onto
-              the next page via an injected top-margin.
-            - If it's taller than a page (one long paragraph), SPLIT it
-              at the page boundary using caretPositionFromPoint +
-              Range.extractContents(), leaving the second half on a new
-              page with the same top-margin.
-       4. Sync the .paper panel count to the final page count.
+     Each .paper is a physical sheet (min-height = 11 in @ 96 dpi) with
+     its own padding = page margin. Text actually lives inside the paper
+     element — not as an overlay. Papers are separated by a visible
+     wallpaper gap (CSS gap on the editor flex column).
 
-     Geometry per page:
-       pad-y (top margin)  +  content-area  +  pad-y (bottom margin)  = 1056 px
-       Injected between pages: pad-y + 24 (visible gap) + pad-y
+     On every input we:
+       1. Merge split-continuation blocks back across paper boundaries so
+          we measure with the document's canonical block list.
+       2. Flatten all block children across all papers, in order.
+       3. Redistribute blocks across papers: for each block in order, try
+          to place it in the current paper. If placing it overflows the
+          paper's content area, either split it (if it's text and tall)
+          or move it whole to the next paper. Create papers as needed.
+       4. Remove any now-empty trailing papers.
      ============================================================ */
 
   const CURSOR_MARKER_ID = '__ve_cursor_marker__';
@@ -141,12 +140,79 @@
     return newBlock;
   }
 
+  function newPaper() {
+    const p = document.createElement('div');
+    p.className = 'paper';
+    return p;
+  }
+
+  function getPapers(editor) {
+    return Array.from(editor.querySelectorAll(':scope > .paper'));
+  }
+
+  // Normalize the editor's direct children so that exactly one or more
+  // .paper siblings hold all content blocks — no orphan direct children,
+  // no nested papers. Orphans get absorbed into the nearest adjacent paper
+  // (preserving document order). Called at the start of every pagination
+  // pass so we always start from a clean structural baseline.
+  function normalizeEditorStructure(editor) {
+    if (!editor) return;
+
+    // 1. Unwrap any accidentally-nested papers (a .paper inside a .paper).
+    //    Content goes into the outer paper at the nested paper's position.
+    let guard = 0;
+    while (guard++ < 20) {
+      const nested = editor.querySelector('.paper .paper');
+      if (!nested) break;
+      const parent = nested.parentNode;
+      while (nested.firstChild) parent.insertBefore(nested.firstChild, nested);
+      nested.remove();
+    }
+
+    // 2. Absorb any orphan direct children of .editor into the nearest
+    //    adjacent paper. Walk children in reverse so the "nearest previous
+    //    paper" logic is simple; if none, fall back to the next one; if
+    //    neither, create a fresh paper to hold them.
+    const orphans = Array.from(editor.children).filter((c) => !c.classList.contains('paper'));
+    for (const orphan of orphans) {
+      let target = orphan.previousElementSibling;
+      while (target && !target.classList.contains('paper')) target = target.previousElementSibling;
+      if (target) {
+        target.appendChild(orphan);   // append at end of previous paper
+        continue;
+      }
+      let next = orphan.nextElementSibling;
+      while (next && !next.classList.contains('paper')) next = next.nextElementSibling;
+      if (next) {
+        next.insertBefore(orphan, next.firstChild);   // prepend into next paper
+        continue;
+      }
+      // No papers exist at all — make one and drop the orphan in.
+      const fresh = newPaper();
+      editor.insertBefore(fresh, orphan);
+      fresh.appendChild(orphan);
+    }
+
+    // 3. Strip pure-whitespace text nodes at editor level (browsers insert
+    //    these sometimes; they'd render in the flex gap between papers).
+    for (const ch of Array.from(editor.childNodes)) {
+      if (ch.nodeType === 3 && !ch.nodeValue.trim()) ch.remove();
+    }
+
+    // 4. If we still have nothing, create a seed paper with an empty <p>.
+    if (!editor.children.length) {
+      const paper = newPaper();
+      const p = document.createElement('p');
+      p.innerHTML = '<br>';
+      paper.appendChild(p);
+      editor.appendChild(paper);
+    }
+  }
+
   const Pagination = {
-    PAGE_H:   11 * 96,   // 1056 px — US Letter @ 96 dpi
-    PAPER_GAP: 24,       // keep in sync with CSS .paper-stack gap
+    PAGE_H: 11 * 96,       // 1056 px — US Letter @ 96 dpi
 
     _raf: null,
-
     schedule() {
       if (this._raf) return;
       this._raf = requestAnimationFrame(() => {
@@ -155,120 +221,170 @@
       });
     },
 
-    // Undo any splits/margins from the last pass so we measure with the
-    // document's "canonical" structure.
-    _reset(editor) {
-      // Merge split-continuation blocks back into their previous sibling.
-      const splits = Array.from(editor.querySelectorAll('[data-ve-split="1"]'));
-      for (const s of splits) {
-        const prev = s.previousElementSibling;
-        if (prev && prev.tagName === s.tagName) {
-          while (s.firstChild) prev.appendChild(s.firstChild);
-          s.remove();
-        } else {
-          s.removeAttribute('data-ve-split');
+    // Merge split-continuation blocks back into their logical origin so
+    // we measure with the canonical block list. Continuations can sit at
+    // the start of paper[N] (with their origin at the end of paper[N-1])
+    // or inline inside a paper if the user moved content around.
+    _mergeSplits(editor) {
+      const papers = getPapers(editor);
+      for (let i = 0; i < papers.length; i++) {
+        const paper = papers[i];
+        // Check the very first child: if it's a split, its origin is in the
+        // previous paper's last element.
+        while (paper.firstElementChild &&
+               paper.firstElementChild.getAttribute('data-ve-split') === '1') {
+          const first = paper.firstElementChild;
+          const prevPaper = papers[i - 1];
+          const prevLast = prevPaper ? prevPaper.lastElementChild : null;
+          if (prevLast && prevLast.tagName === first.tagName) {
+            while (first.firstChild) prevLast.appendChild(first.firstChild);
+            first.remove();
+          } else {
+            first.removeAttribute('data-ve-split');
+            break;
+          }
         }
+        // Sibling-level splits inside the same paper.
+        Array.from(paper.querySelectorAll(':scope > [data-ve-split="1"]')).forEach((s) => {
+          const prev = s.previousElementSibling;
+          if (prev && prev.tagName === s.tagName) {
+            while (s.firstChild) prev.appendChild(s.firstChild);
+            s.remove();
+          } else {
+            s.removeAttribute('data-ve-split');
+          }
+        });
       }
-      // Clear page-break margins.
-      editor.querySelectorAll('[data-ve-pagebreak="1"]').forEach((b) => {
-        b.removeAttribute('data-ve-pagebreak');
-        b.style.marginTop = '';
-        if (!b.getAttribute('style')) b.removeAttribute('style');
-      });
     },
 
     update() {
       const editor = $('#editor');
-      const page   = $('#page');
-      const stack  = $('#paper-stack');
-      if (!editor || !page || !stack) return;
+      if (!editor) return;
+      normalizeEditorStructure(editor);
 
       const hadCursor = placeCursorMarker();
       try {
-        this._reset(editor);
+        this._mergeSplits(editor);
 
-        const cs     = getComputedStyle(editor);
-        const padTop = parseFloat(cs.paddingTop)    || 0;
-        const padBot = parseFloat(cs.paddingBottom) || 0;
-        const contentH  = this.PAGE_H - padTop - padBot;
-        const gapBlockH = padBot + this.PAPER_GAP + padTop;
+        const papers = getPapers(editor);
+        if (!papers.length) { editor.appendChild(newPaper()); papers.push(editor.lastElementChild); }
 
-        let pageContentStart = padTop;
-        let pageCount = 1;
+        // 1. Flatten: collect block children across all papers in order.
+        const blocks = [];
+        for (const paper of papers) {
+          for (const ch of Array.from(paper.childNodes)) {
+            if (ch.nodeType === 1) blocks.push(ch);
+            else if (ch.nodeType === 3 && !ch.nodeValue.trim()) ch.remove();
+          }
+        }
+        if (!blocks.length) {
+          const p = document.createElement('p');
+          p.innerHTML = '<br>';
+          blocks.push(p);
+        }
 
+        // 2. Redistribute. Each iteration either advances `i` (block placed)
+        //    or advances to the next paper (current block pushed). A safety
+        //    iteration cap guards against any unexpected non-progress.
+        let paperIdx = 0;
+        let curPaper = papers[0];
         let i = 0;
         let iter = 0;
-        const MAX_ITER = 1000;     // safety net
+        const MAX_ITER = Math.max(2000, blocks.length * 6);
 
-        while (i < editor.children.length && iter++ < MAX_ITER) {
-          const b = editor.children[i];
-          if (!(b instanceof HTMLElement)) { i++; continue; }
+        const ensurePaperAt = (idx) => {
+          while (papers.length <= idx) {
+            const p = newPaper();
+            editor.appendChild(p);
+            papers.push(p);
+          }
+          return papers[idx];
+        };
 
-          const bTop    = b.offsetTop;
-          const bH      = b.offsetHeight;
-          const bBottom = bTop + bH;
-          const pageEnd = pageContentStart + contentH;
+        // A block fits on the current paper iff its bottom edge lands at or
+        // above the content area's bottom boundary. We measure against the
+        // block directly (its offsetTop + offsetHeight inside the paper)
+        // instead of paper.scrollHeight vs clientHeight — the latter counts
+        // padding as part of the available space, so content that spills
+        // INTO the bottom margin reads as "fits" and no break is triggered.
+        const paperOverflow = (paper) => {
+          const last = paper.lastElementChild;
+          if (!last) return false;
+          const cs = getComputedStyle(paper);
+          const padBot = parseFloat(cs.paddingBottom) || 0;
+          // clientHeight = padding-box height. Subtracting padBot gives the
+          // padding-box-relative Y of the content area's bottom.
+          const contentBottom = paper.clientHeight - padBot;
+          return (last.offsetTop + last.offsetHeight) > contentBottom + 0.5;
+        };
 
-          if (bBottom <= pageEnd) { i++; continue; }
+        while (i < blocks.length && iter++ < MAX_ITER) {
+          const block = blocks[i];
+          curPaper.appendChild(block);   // moves it in (or leaves it in place)
 
-          // Block bottom overflows the page.
-          const editorRect = editor.getBoundingClientRect();
-          const pageEndScreenY = editorRect.top + pageEnd;
+          if (!paperOverflow(curPaper)) { i++; continue; }
 
-          // Case 1: block starts on this page and fits whole on one page
-          //         → shove entire block to the next page.
-          const startsOnThisPage = bTop >= pageContentStart && bTop < pageEnd;
-          if (startsOnThisPage && bH <= contentH && i > 0) {
-            b.setAttribute('data-ve-pagebreak', '1');
-            b.style.marginTop = gapBlockH + 'px';
-            pageContentStart = b.offsetTop;
-            pageCount++;
+          // Overflow: try to split at the content area's bottom boundary.
+          const rect = curPaper.getBoundingClientRect();
+          const cs = getComputedStyle(curPaper);
+          const padBot = parseFloat(cs.paddingBottom) || 0;
+          // Snap the split a hair ABOVE the boundary so the line that
+          // contains the split point ends above the margin — otherwise the
+          // last line on the page would extend a few pixels into the
+          // bottom margin.
+          const safety = 2;
+          const splitY = rect.bottom - padBot - safety;
+
+          // Temporarily lift the hard clip so caretPositionFromPoint can
+          // find the text node at splitY.
+          const prevOverflow = curPaper.style.overflow;
+          curPaper.style.overflow = 'visible';
+          const tail = splitBlockAtY(block, splitY);
+          curPaper.style.overflow = prevOverflow;
+
+          if (tail) {
+            tail.remove();
+            tail.setAttribute('data-ve-split', '1');
+            blocks.splice(i + 1, 0, tail);
+            // Sanity: if the first half STILL overflows (e.g. an image was
+            // split and the remaining half is taller than one page), push
+            // it whole to the next paper.
+            if (paperOverflow(curPaper) && curPaper.children.length > 1) {
+              block.remove();
+              paperIdx++;
+              curPaper = ensurePaperAt(paperIdx);
+              curPaper.appendChild(block);
+              i++;
+              continue;
+            }
             i++;
+            paperIdx++;
+            curPaper = ensurePaperAt(paperIdx);
             continue;
           }
 
-          // Case 2: block is taller than a page or starts at the very top
-          //         → split it at the page boundary.
-          const newBlock = splitBlockAtY(b, pageEndScreenY);
-          if (newBlock) {
-            newBlock.setAttribute('data-ve-split',     '1');
-            newBlock.setAttribute('data-ve-pagebreak', '1');
-            newBlock.style.marginTop = gapBlockH + 'px';
-            pageContentStart = newBlock.offsetTop;
-            pageCount++;
-            i++;                  // examine newBlock on next iteration
+          // Split failed. If the block is the ONLY child of the current
+          // paper we have no choice but to accept it oversize (clipped).
+          // Otherwise push the whole block to the next paper.
+          if (curPaper.children.length === 1) {
+            i++;
+            paperIdx++;
+            curPaper = ensurePaperAt(paperIdx);
             continue;
           }
-
-          // Couldn't split (e.g. offscreen). Best-effort: push whole block.
-          if (i > 0) {
-            b.setAttribute('data-ve-pagebreak', '1');
-            b.style.marginTop = gapBlockH + 'px';
-            pageContentStart = b.offsetTop;
-            pageCount++;
-          }
-          i++;
+          block.remove();
+          paperIdx++;
+          curPaper = ensurePaperAt(paperIdx);
+          // don't increment i — retry placing this same block on next paper
         }
 
-        // Sync the paper stack to the final page count.
-        const have = stack.children.length;
-        if (have < pageCount) {
-          const frag = document.createDocumentFragment();
-          for (let j = have; j < pageCount; j++) {
-            const p = document.createElement('div');
-            p.className = 'paper';
-            frag.appendChild(p);
-          }
-          stack.appendChild(frag);
-        } else if (have > pageCount) {
-          for (let j = have - 1; j >= pageCount; j--) {
-            stack.removeChild(stack.children[j]);
-          }
+        // 3. Prune trailing empty papers.
+        for (let k = papers.length - 1; k > paperIdx; k--) {
+          if (!papers[k].children.length) papers[k].remove();
         }
 
-        page.style.minHeight =
-          (pageCount * this.PAGE_H + Math.max(0, pageCount - 1) * this.PAPER_GAP) + 'px';
-
+        // 4. Update page-count stat.
+        const pageCount = paperIdx + 1;
         const pc = $('#page-count-stat');
         if (pc) pc.textContent = `${pageCount} page${pageCount === 1 ? '' : 's'}`;
       } finally {
@@ -277,30 +393,170 @@
     }
   };
 
-  // Serialized view of the editor without our render-time pagination
-  // hints: split-continuation blocks are merged back, injected margin-
-  // tops and data-ve-* attributes are stripped.
+  // Flatten the editor's <div.paper> wrappers + split continuations into a
+  // single canonical stream of block HTML. Used when saving to IDB.
   function cleanEditorHTML() {
     const editor = $('#editor');
     const clone = editor.cloneNode(true);
-    // Merge splits back.
-    Array.from(clone.querySelectorAll('[data-ve-split="1"]')).forEach((s) => {
-      const prev = s.previousElementSibling;
-      if (prev && prev.tagName === s.tagName) {
-        while (s.firstChild) prev.appendChild(s.firstChild);
-        s.remove();
-      } else {
-        s.removeAttribute('data-ve-split');
+    // Merge split continuations across papers.
+    Array.from(clone.querySelectorAll('.paper')).forEach((paper) => {
+      while (paper.firstElementChild &&
+             paper.firstElementChild.getAttribute('data-ve-split') === '1') {
+        const first = paper.firstElementChild;
+        const prevPaper = paper.previousElementSibling;
+        const prevLast = (prevPaper && prevPaper.classList.contains('paper'))
+          ? prevPaper.lastElementChild : null;
+        if (prevLast && prevLast.tagName === first.tagName) {
+          while (first.firstChild) prevLast.appendChild(first.firstChild);
+          first.remove();
+        } else {
+          first.removeAttribute('data-ve-split');
+          break;
+        }
       }
+      // Intra-paper splits.
+      Array.from(paper.querySelectorAll(':scope > [data-ve-split="1"]')).forEach((s) => {
+        const prev = s.previousElementSibling;
+        if (prev && prev.tagName === s.tagName) {
+          while (s.firstChild) prev.appendChild(s.firstChild);
+          s.remove();
+        } else {
+          s.removeAttribute('data-ve-split');
+        }
+      });
     });
-    // Strip pagebreak margins and cursor markers.
-    clone.querySelectorAll('[data-ve-pagebreak]').forEach((b) => {
-      b.removeAttribute('data-ve-pagebreak');
-      b.style.marginTop = '';
-      if (!b.getAttribute('style')) b.removeAttribute('style');
+    // Unwrap paper containers — saved HTML is a flat block list.
+    const out = document.createElement('div');
+    Array.from(clone.querySelectorAll(':scope > .paper')).forEach((p) => {
+      while (p.firstChild) out.appendChild(p.firstChild);
     });
-    clone.querySelectorAll('[data-ve-cursor], #' + CURSOR_MARKER_ID).forEach((n) => n.remove());
-    return clone.innerHTML;
+    // Strip cursor markers.
+    out.querySelectorAll('[data-ve-cursor], #' + CURSOR_MARKER_ID).forEach((n) => n.remove());
+    return out.innerHTML;
+  }
+
+  // Flattened editor HTML with a page-break hint on the first block of each
+  // paper. Used by Export.download('html') so printed / PDF output paginates
+  // identically to the editor view.
+  function pagedExportHTML() {
+    const editor = $('#editor');
+    const clone = editor.cloneNode(true);
+    // Merge split continuations across papers (as in cleanEditorHTML).
+    Array.from(clone.querySelectorAll('.paper')).forEach((paper) => {
+      while (paper.firstElementChild &&
+             paper.firstElementChild.getAttribute('data-ve-split') === '1') {
+        const first = paper.firstElementChild;
+        const prevPaper = paper.previousElementSibling;
+        const prevLast = (prevPaper && prevPaper.classList.contains('paper'))
+          ? prevPaper.lastElementChild : null;
+        if (prevLast && prevLast.tagName === first.tagName) {
+          while (first.firstChild) prevLast.appendChild(first.firstChild);
+          first.remove();
+        } else {
+          first.removeAttribute('data-ve-split');
+          break;
+        }
+      }
+      Array.from(paper.querySelectorAll(':scope > [data-ve-split="1"]')).forEach((s) => {
+        const prev = s.previousElementSibling;
+        if (prev && prev.tagName === s.tagName) {
+          while (s.firstChild) prev.appendChild(s.firstChild);
+          s.remove();
+        } else {
+          s.removeAttribute('data-ve-split');
+        }
+      });
+    });
+    // Unwrap papers and mark the first block of each (except the first
+    // paper) with a page-break directive.
+    const out = document.createElement('div');
+    const papers = Array.from(clone.querySelectorAll(':scope > .paper'));
+    papers.forEach((p, idx) => {
+      const firstEl = p.firstElementChild;
+      if (idx > 0 && firstEl) firstEl.setAttribute('data-ve-pagebreak', '1');
+      while (p.firstChild) out.appendChild(p.firstChild);
+    });
+    out.querySelectorAll('[data-ve-cursor], #' + CURSOR_MARKER_ID).forEach((n) => n.remove());
+    return out.innerHTML;
+  }
+
+  /* ============================================================
+     Per-document page margins
+     ============================================================
+
+     Google Docs stores margins per-document, not globally, and defaults
+     to 1 inch on all four sides. Each ViperEdit doc carries its own
+     { top, right, bottom, left } in inches; Margins.apply() pushes those
+     values into CSS custom properties the .paper reads. */
+
+  const MARGIN_DEFAULT = Object.freeze({ top: 1, right: 1, bottom: 1, left: 1 });
+  const MARGIN_PRESETS = {
+    narrow: { top: 0.5,  right: 0.5,  bottom: 0.5,  left: 0.5  },
+    normal: { top: 1,    right: 1,    bottom: 1,    left: 1    },
+    wide:   { top: 1.33, right: 1.33, bottom: 1.33, left: 1.33 }
+  };
+
+  function clampMargin(v) {
+    const n = parseFloat(v);
+    if (!Number.isFinite(n)) return 1;
+    return Math.max(0, Math.min(4, n));
+  }
+
+  const Margins = {
+    // Read the margin record off a doc, falling back to the default if
+    // missing (older docs from before custom margins existed).
+    forDoc(doc) {
+      if (!doc || !doc.margins) return { ...MARGIN_DEFAULT };
+      const m = doc.margins;
+      return {
+        top:    clampMargin(m.top),
+        right:  clampMargin(m.right),
+        bottom: clampMargin(m.bottom),
+        left:   clampMargin(m.left)
+      };
+    },
+    // Push the doc's margins into CSS vars + the print @page rule.
+    apply(doc) {
+      const m = this.forDoc(doc);
+      const root = document.documentElement.style;
+      // 1 inch = 96 CSS pixels (the editor's coordinate system).
+      root.setProperty('--page-pad-top',    (m.top    * 96) + 'px');
+      root.setProperty('--page-pad-right',  (m.right  * 96) + 'px');
+      root.setProperty('--page-pad-bottom', (m.bottom * 96) + 'px');
+      root.setProperty('--page-pad-left',   (m.left   * 96) + 'px');
+
+      let style = document.getElementById('ve-print-page-style');
+      if (!style) {
+        style = document.createElement('style');
+        style.id = 've-print-page-style';
+        document.head.appendChild(style);
+      }
+      style.textContent =
+        `@media print { @page { size: Letter; margin: ${m.top}in ${m.right}in ${m.bottom}in ${m.left}in; } }`;
+
+      if (typeof Pagination !== 'undefined') Pagination.schedule();
+    },
+    // Update the current document's margins and persist.
+    setForCurrent(margins) {
+      const doc = Docs && Docs.current ? Docs.current() : null;
+      if (!doc) return;
+      doc.margins = {
+        top:    clampMargin(margins.top),
+        right:  clampMargin(margins.right),
+        bottom: clampMargin(margins.bottom),
+        left:   clampMargin(margins.left)
+      };
+      doc.updatedAt = Date.now();
+      Persist.saveDoc(doc);
+      this.apply(doc);
+    }
+  };
+
+  // Inches used for the current doc's margins — consulted by export.
+  function currentPageMarginInches() {
+    const doc = Docs && Docs.current ? Docs.current() : null;
+    const m = Margins.forDoc(doc);
+    return `${m.top}in ${m.right}in ${m.bottom}in ${m.left}in`;
   }
 
   // Flip the UI theme without the transitional flash. Transitions on the
@@ -411,12 +667,15 @@
     fontFamily: '"Inter", sans-serif',
     fontSize: 11,                 // pt, applied as base document size via zoom
     lineHeight: 1.55,
-    pageMargins: 'normal',        // 'narrow' | 'normal' | 'wide'
     spellcheck: true,
     smartQuotes: true,
     autoLinks: true,
     autosaveMs: 600,
-    zoom: 100
+    zoom: 100,
+    // Per-command shortcut overrides. Keys are command ids, values are
+    // canonical combo strings (e.g. "Ctrl+Shift+P") or null to unbind.
+    // When a command id is absent here, its registered default is used.
+    shortcuts: {}
   };
 
   const Settings = {
@@ -444,15 +703,12 @@
       document.body.setAttribute('data-page', s.pageStyle);
       document.documentElement.style.setProperty('--font-doc-default', s.fontFamily);
 
-      // Line height + margins
+      // Line height + spellcheck (margins are per-doc and owned by Margins.apply)
       const ed = $('#editor');
       if (ed) {
         ed.style.lineHeight = s.lineHeight;
         ed.spellcheck = !!s.spellcheck;
       }
-      const mapMargin = { narrow: '48px', normal: '96px', wide: '128px' };
-      document.documentElement.style.setProperty('--page-pad-y', mapMargin[s.pageMargins] || '96px');
-      document.documentElement.style.setProperty('--page-pad-x', mapMargin[s.pageMargins] || '96px');
 
       // Zoom — only actually apply a transform when zoom != 100%.
       // A transform (even scale(1)) puts the element on its own compositor
@@ -467,7 +723,10 @@
       const fs = $('#font-family');
       if (fs && s.fontFamily && fs.value !== s.fontFamily) fs.value = s.fontFamily;
 
-      // Any setting that changes block heights or page margins affects
+      // The @page print rule is written by Margins.apply() (per-doc, not
+      // per-setting), so we don't touch it here.
+
+      // Font-family / line-height changes affect block heights and therefore
       // pagination. Recompute after layout settles.
       if (typeof Pagination !== 'undefined') Pagination.schedule();
     }
@@ -503,7 +762,8 @@
           <p></p>`,
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        preset: null
+        preset: null,
+        margins: { ...MARGIN_DEFAULT }
       };
       this.all.push(d);
       this.currentId = d.id;
@@ -533,7 +793,8 @@
         html: template ? (template.html || '') : '',
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        preset: (template && template.preset) ? { ...template.preset } : null
+        preset: (template && template.preset) ? { ...template.preset } : null,
+        margins: (template && template.margins) ? { ...template.margins } : { ...MARGIN_DEFAULT }
       };
       this.all.push(d);
       this.currentId = d.id;
@@ -561,7 +822,8 @@
         html: cur.html,
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        preset: cur.preset ? { ...cur.preset } : null
+        preset:  cur.preset  ? { ...cur.preset }  : null,
+        margins: cur.margins ? { ...cur.margins } : { ...MARGIN_DEFAULT }
       };
       this.all.push(d);
       this.currentId = d.id;
@@ -590,7 +852,6 @@
         fontSize:   Settings.get('fontSize'),
         lineHeight: Settings.get('lineHeight'),
         pageStyle:  Settings.get('pageStyle'),
-        pageMargins: Settings.get('pageMargins'),
         zoom:       Settings.get('zoom')
       };
       d.updatedAt = Date.now();
@@ -701,6 +962,78 @@
       on(this.el, 'input', () => { this.scheduleSave(); this.updateCounts(); this.checkSlash(); Pagination.schedule(); });
       on(this.el, 'keyup',  () => UI.refreshToolbar());
       on(this.el, 'mouseup', () => UI.refreshToolbar());
+
+      // Tab / Shift+Tab indent the current block (or list item) instead of
+      // moving focus out of the editor. Matches Google Docs / Word behavior.
+      on(this.el, 'keydown', (e) => {
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          document.execCommand(e.shiftKey ? 'outdent' : 'indent');
+          this.scheduleSave();
+          Pagination.schedule();
+          return;
+        }
+        // Backspace at the start of a paper's first block — the browser's
+        // default won't merge across .paper sibling wrappers, so we do it
+        // manually.
+        if (e.key === 'Backspace') {
+          const sel = window.getSelection();
+          if (!sel || !sel.isCollapsed || !sel.rangeCount) return;
+          const r = sel.getRangeAt(0);
+          if (r.startOffset !== 0) return;
+          // Walk up to find the containing block (child of a .paper).
+          let block = r.startContainer;
+          if (block.nodeType === 3) block = block.parentNode;
+          while (block && block.parentNode && !(block.parentNode.classList && block.parentNode.classList.contains('paper'))) {
+            block = block.parentNode;
+          }
+          if (!block || !block.parentNode) return;
+          const paper = block.parentNode;
+          if (paper.firstElementChild !== block) return;
+          // Also make sure the caret is truly at the start of that block.
+          const probe = document.createRange();
+          probe.selectNodeContents(block);
+          probe.setEnd(r.startContainer, r.startOffset);
+          if (probe.toString().length > 0) return;
+          const prevPaper = paper.previousElementSibling;
+          if (!prevPaper || !prevPaper.classList.contains('paper')) return;
+          const prevLast = prevPaper.lastElementChild;
+          if (!prevLast) return;
+          e.preventDefault();
+          // Move cursor to end of prev paper's last block, then merge.
+          const tgtRange = document.createRange();
+          tgtRange.selectNodeContents(prevLast);
+          tgtRange.collapse(false);
+          // If same tagName and both are block-ish, merge their contents.
+          if (prevLast.tagName === block.tagName) {
+            const mergeAtOffset = prevLast.childNodes.length;
+            while (block.firstChild) prevLast.appendChild(block.firstChild);
+            block.remove();
+            // Collapse the caret at the merge seam.
+            const sel2 = window.getSelection();
+            sel2.removeAllRanges();
+            const mergeRange = document.createRange();
+            const mergeTarget = prevLast.childNodes[mergeAtOffset] || prevLast;
+            if (mergeTarget === prevLast) {
+              mergeRange.selectNodeContents(prevLast);
+              mergeRange.collapse(false);
+            } else {
+              mergeRange.setStart(mergeTarget, 0);
+              mergeRange.collapse(true);
+            }
+            sel2.addRange(mergeRange);
+          } else {
+            // Different tag types: move block after prevLast (same paper) so
+            // the user can fall back to another Backspace inside the paper.
+            prevPaper.appendChild(block);
+            const sel2 = window.getSelection();
+            sel2.removeAllRanges();
+            sel2.addRange(tgtRange);
+          }
+          this.scheduleSave();
+          Pagination.schedule();
+        }
+      });
       on(document, 'selectionchange', () => {
         if (document.activeElement === this.el) UI.refreshToolbar();
       });
@@ -744,7 +1077,13 @@
     load(doc) {
       if (!doc) return;
       this.titleEl.value = doc.title || 'Untitled document';
-      this.el.innerHTML  = doc.html  || '';
+      // Wrap the document body in a single .paper; pagination will split
+      // it across as many papers as the content needs.
+      const inner = doc.html || '<p><br></p>';
+      this.el.innerHTML = `<div class="paper">${inner}</div>`;
+      // Apply the document's per-side page margins before pagination
+      // measures anything.
+      Margins.apply(doc);
       this.updateCounts();
       // Apply the document's preset, if any.
       if (doc.preset && Object.keys(doc.preset).length) {
@@ -884,6 +1223,212 @@
   }
 
   /* ============================================================
+     Color menu — shared popup for text color + highlight buttons.
+     Owns preset swatches, "None", and a "Custom color…" entry that opens
+     the browser's native picker via a hidden <input type="color">.
+     ============================================================ */
+
+  const COLOR_PRESETS = [
+    // Row 1 — common text blacks / greys
+    '#000000','#434343','#666666','#999999','#b7b7b7','#cccccc','#d9d9d9','#efefef','#f3f3f3','#ffffff',
+    // Row 2 — warm highlights / brights
+    '#c00000','#e06666','#f6b26b','#ffd966','#93c47d','#76a5af','#6fa8dc','#8e7cc3','#c27ba0','#980000',
+    // Row 3 — deeper saturations
+    '#ff0000','#ff9900','#ffff00','#00ff00','#00ffff','#4a86e8','#0000ff','#9900ff','#ff00ff','#741b47',
+    // Row 4 — mutes
+    '#5b0f00','#783f04','#7f6000','#274e13','#0c343d','#1c4587','#073763','#20124d','#4c1130','#000000'
+  ];
+
+  const ColorMenu = {
+    _triggers: [],
+    _currentCmd: null,
+    _currentTrigger: null,
+    _savedRange: null,
+
+    init() {
+      this._triggers = $$('.tb-colordd');
+      const popup = $('#color-popup');
+      if (!popup) return;
+
+      // Build preset grid once.
+      const grid = $('#cp-grid');
+      grid.innerHTML = '';
+      for (const c of COLOR_PRESETS) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'cp-swatch';
+        b.style.background = c;
+        b.dataset.color = c;
+        b.title = c;
+        grid.appendChild(b);
+      }
+
+      // Clicking a trigger opens the popup anchored under it and
+      // remembers which command the popup is for.
+      this._triggers.forEach((trigger) => {
+        // Save the editor's text selection the moment the user presses the
+        // swatch — before any focus change or native-picker click can
+        // collapse it. Runs on mousedown so it fires ahead of the click.
+        on(trigger, 'mousedown', () => this._saveSelection());
+        const btn = trigger.querySelector('.tb-colordd-btn');
+        on(btn, 'click', (e) => {
+          e.stopPropagation();
+          this.open(trigger, trigger.dataset.cmd);
+        });
+      });
+
+      // Swatch selection
+      on(grid, 'click', (e) => {
+        const s = e.target.closest('.cp-swatch');
+        if (!s) return;
+        this._apply(this._currentCmd, s.dataset.color);
+        this.close();
+      });
+
+      // "None" button — unset the color for the current command.
+      on($('.cp-none', popup), 'click', () => {
+        this._apply(this._currentCmd, null);
+        this.close();
+      });
+
+      // Label the None button contextually ("No highlight" / "Automatic").
+      // We rewrite its text every open, so just create the element here.
+
+      // "Custom color…" — open the hidden native picker.
+      const hidden = $('#cp-hidden');
+      on($('.cp-custom', popup), 'click', () => {
+        // Clicking the hidden input opens the OS picker. The `input` event
+        // fires once the user commits a color.
+        hidden.click();
+      });
+      on(hidden, 'input', () => {
+        this._apply(this._currentCmd, hidden.value);
+        this.close();
+      });
+      on(hidden, 'change', () => {
+        this._apply(this._currentCmd, hidden.value);
+        this.close();
+      });
+
+      // Close when clicking outside or pressing Escape.
+      on(document, 'mousedown', (e) => {
+        if (popup.hidden) return;
+        if (popup.contains(e.target)) return;
+        if (this._currentTrigger && this._currentTrigger.contains(e.target)) return;
+        this.close();
+      });
+      on(document, 'keydown', (e) => {
+        if (e.key === 'Escape' && !popup.hidden) this.close();
+      });
+    },
+
+    open(trigger, cmd) {
+      const popup = $('#color-popup');
+      if (!popup) return;
+      this._currentCmd = cmd;
+      this._currentTrigger = trigger;
+      $('.cp-none', popup).textContent = cmd === 'hiliteColor' ? 'No highlight' : 'Automatic';
+
+      // Position popup just below the trigger (fixed coords).
+      popup.hidden = false;
+      const r = trigger.getBoundingClientRect();
+      popup.style.top = (r.bottom + 4) + 'px';
+      popup.style.left = Math.min(
+        r.left,
+        window.innerWidth - popup.offsetWidth - 8
+      ) + 'px';
+    },
+
+    close() {
+      const popup = $('#color-popup');
+      if (popup) popup.hidden = true;
+      this._currentCmd = null;
+      this._currentTrigger = null;
+    },
+
+    _saveSelection() {
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) { this._savedRange = null; return; }
+      const r = sel.getRangeAt(0);
+      if (!Editor.el.contains(r.startContainer)) { this._savedRange = null; return; }
+      this._savedRange = r.cloneRange();
+    },
+
+    _restoreSelection() {
+      if (!this._savedRange) return false;
+      Editor.el.focus();
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(this._savedRange);
+      return true;
+    },
+
+    _apply(cmd, value) {
+      const had = this._restoreSelection();
+      if (!had) Editor.el.focus();
+      // "None" semantics:
+      //   - hiliteColor: set transparent and strip any existing
+      //     background-color in the selection so the yellow can't linger
+      //     under a nested span.
+      //   - foreColor:   set the page's default body foreground (black)
+      //     and strip any explicit `color` on descendants of the selection.
+      if (value === null) {
+        if (cmd === 'hiliteColor') {
+          document.execCommand('hiliteColor', false, 'transparent');
+          document.execCommand('backColor',   false, 'transparent');
+          this._stripInlineStyleInSelection('backgroundColor');
+        } else {
+          document.execCommand('foreColor',  false, '#000000');
+          this._stripInlineStyleInSelection('color');
+        }
+      } else {
+        document.execCommand(cmd, false, value);
+      }
+      // Update the trigger's color bar to reflect the chosen color.
+      if (this._currentTrigger) {
+        const bar = this._currentTrigger.querySelector('.tb-colordd-bar');
+        if (bar) bar.style.background =
+          value === null
+            ? (cmd === 'hiliteColor' ? 'transparent' : '#000000')
+            : value;
+      }
+      UI.refreshToolbar();
+      Editor.scheduleSave();
+      Editor.updateCounts();
+      Pagination.schedule();
+    },
+
+    // Walk all elements intersected by the current selection and remove
+    // the given inline CSS property. Used for "None" so residual
+    // background-color or color styles don't override our reset.
+    _stripInlineStyleInSelection(cssProp) {
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return;
+      const range = sel.getRangeAt(0);
+      const root = range.commonAncestorContainer;
+      const startNode = root.nodeType === 1 ? root : root.parentNode;
+      if (!startNode) return;
+      const walker = document.createTreeWalker(startNode, NodeFilter.SHOW_ELEMENT);
+      const victims = [];
+      let node = walker.currentNode;
+      while (node) {
+        if (node !== startNode && range.intersectsNode(node)) {
+          if (node.style && node.style[cssProp]) victims.push(node);
+        }
+        node = walker.nextNode();
+      }
+      // Also check startNode itself.
+      if (startNode.style && startNode.style[cssProp] && range.intersectsNode(startNode)) {
+        victims.push(startNode);
+      }
+      for (const v of victims) {
+        v.style[cssProp] = '';
+        if (!v.getAttribute('style')) v.removeAttribute('style');
+      }
+    }
+  };
+
+  /* ============================================================
      8. UI — toolbar, menus, theme, counts
      ============================================================ */
 
@@ -901,14 +1446,9 @@
         on(btn, 'click', () => Editor.exec(btn.dataset.cmd));
       });
 
-      // Color inputs
-      $$('.tb-color input[type="color"]').forEach((inp) => {
-        on(inp, 'input', () => {
-          const bar = inp.parentElement.querySelector('.tb-color-bar');
-          if (bar) bar.style.background = inp.value;
-          Editor.exec(inp.dataset.cmd, inp.value);
-        });
-      });
+      // Color controls — dropdown with "None", a preset palette, and a
+      // Custom… option. See ColorMenu (initialised below) for logic.
+      ColorMenu.init();
 
       // Block style
       on($('#block-style'), 'change', (e) => Editor.exec('formatBlock', `<${e.target.value.toUpperCase()}>`));
@@ -995,6 +1535,7 @@
         case 'download-md':   Export.download('md'); break;
         case 'download-txt':  Export.download('txt'); break;
         case 'print':         window.print(); break;
+        case 'page-setup':    PageSetup.open(); break;
         case 'save-preset':   Docs.savePresetFromCurrentSettings(); break;
         case 'clear-preset':  Docs.clearPreset(); break;
         case 'duplicate':     App.duplicate(); break;
@@ -1224,10 +1765,6 @@
       type: 'select',
       options: [['paper','Paper'], ['sepia','Sepia'], ['glass','Glass (translucent)'], ['dark','Dark']]
     },
-    { key: 'pageMargins', title: 'Page margins', desc: 'Inside the document page',
-      type: 'select',
-      options: [['narrow','Narrow'], ['normal','Normal'], ['wide','Wide']]
-    },
     { key: 'fontFamily', title: 'Default font', desc: 'Applied to the whole page',
       type: 'font-select'
     },
@@ -1255,6 +1792,70 @@
     }
   ];
 
+  /* ============================================================
+     Page Setup — per-document margins UI (File → Page setup…).
+     Streamlined: four inputs (Top / Bottom / Left / Right) in inches or
+     centimetres, three preset buttons (Narrow / Normal / Wide), a reset,
+     and an apply. Google-Docs-default is Normal (1 in all sides).
+     ============================================================ */
+  const PageSetup = {
+    // 'in' or 'cm' — remembered for the session only.
+    _unit: 'in',
+    _draft: null,   // working copy while the modal is open
+
+    init() {
+      on($('#btn-page-setup-close'), 'click', () => this.close());
+      on($('#overlay-page-setup'), 'click', (e) => {
+        if (e.target === $('#overlay-page-setup')) this.close();
+      });
+      on($('#btn-ps-default'), 'click', () => this.loadPreset('normal'));
+      on($('#btn-ps-apply'),   'click', () => this.apply());
+      on($('#ps-unit'), 'change', (e) => { this._unit = e.target.value; this.render(); });
+      $$('[data-ps-preset]').forEach((btn) =>
+        on(btn, 'click', () => this.loadPreset(btn.dataset.psPreset)));
+      ['ps-top','ps-bottom','ps-left','ps-right'].forEach((id) => {
+        on($('#' + id), 'input', (e) => {
+          const key = id.slice(3);
+          const raw = parseFloat(e.target.value);
+          if (!Number.isFinite(raw)) return;
+          this._draft[key] = this._unit === 'cm' ? raw / 2.54 : raw;
+        });
+      });
+    },
+
+    open() {
+      const doc = Docs.current();
+      this._draft = Margins.forDoc(doc);
+      $('#overlay-page-setup').hidden = false;
+      $('#ps-unit').value = this._unit;
+      this.render();
+      setTimeout(() => $('#ps-top').focus(), 30);
+    },
+    close() {
+      $('#overlay-page-setup').hidden = true;
+      this._draft = null;
+      if (Editor && Editor.el) Editor.el.focus();
+    },
+    loadPreset(name) {
+      const p = MARGIN_PRESETS[name] || MARGIN_PRESETS.normal;
+      this._draft = { ...p };
+      this.render();
+    },
+    render() {
+      if (!this._draft) return;
+      const toDisplay = (v) => this._unit === 'cm' ? (v * 2.54).toFixed(2) : v.toFixed(2);
+      $('#ps-top').value    = toDisplay(this._draft.top);
+      $('#ps-bottom').value = toDisplay(this._draft.bottom);
+      $('#ps-left').value   = toDisplay(this._draft.left);
+      $('#ps-right').value  = toDisplay(this._draft.right);
+    },
+    apply() {
+      if (!this._draft) return;
+      Margins.setForCurrent(this._draft);
+      this.close();
+    }
+  };
+
   const SettingsUI = {
     init() {
       on($('#settings-search'), 'input', () => this.render());
@@ -1271,13 +1872,127 @@
       const q = $('#settings-search').value.trim().toLowerCase();
       const list = $('#settings-list');
       list.innerHTML = '';
+
+      // ---- Regular settings ----
       const filtered = SETTING_ROWS.filter(r => !q || (r.title + ' ' + r.desc + ' ' + r.key).toLowerCase().includes(q));
-      if (!filtered.length) {
-        list.innerHTML = '<div class="setting"><div class="setting-label"><div class="s-title">No settings match.</div></div></div>';
-        return;
+      if (filtered.length) {
+        const head = document.createElement('div');
+        head.className = 'setting-section-title';
+        head.textContent = 'General';
+        list.appendChild(head);
+        for (const row of filtered) list.appendChild(this.renderRow(row));
       }
-      for (const row of filtered) {
-        list.appendChild(this.renderRow(row));
+
+      // ---- Shortcuts (one row per registered command) ----
+      const overrides = Settings.get('shortcuts') || {};
+      const cmds = Commands.list
+        .slice()
+        .filter(c => {
+          // Only include "runnable" commands, not pure filler. Everything registered
+          // currently qualifies, but hide font.* and bg.* since there are tons.
+          if (c.id.startsWith('font.') || c.id.startsWith('bg.') || c.id.startsWith('tpl.')) return false;
+          if (!q) return true;
+          return (c.title + ' ' + (c.group || '') + ' ' + (c.keywords || '')).toLowerCase().includes(q);
+        })
+        .sort((a, b) => (a.group || '').localeCompare(b.group || '') || a.title.localeCompare(b.title));
+
+      if (cmds.length) {
+        const head = document.createElement('div');
+        head.className = 'setting-section-title';
+        head.textContent = 'Keyboard shortcuts';
+        list.appendChild(head);
+
+        const hint = document.createElement('div');
+        hint.className = 'setting-subhint';
+        hint.textContent = 'Click a shortcut to record a new key combination. Esc cancels, Backspace clears.';
+        list.appendChild(hint);
+
+        for (const cmd of cmds) list.appendChild(this.renderShortcutRow(cmd, overrides));
+      }
+
+      if (!filtered.length && !cmds.length) {
+        list.innerHTML = '<div class="setting"><div class="setting-label"><div class="s-title">Nothing matches your search.</div></div></div>';
+      }
+    },
+
+    renderShortcutRow(cmd, overrides) {
+      const wrap = document.createElement('div');
+      wrap.className = 'setting shortcut-row';
+
+      const label = document.createElement('div');
+      label.className = 'setting-label';
+      const groupTag = cmd.group ? `<span class="shortcut-group">${esc(cmd.group)}</span>` : '';
+      label.innerHTML = `<div class="s-title">${groupTag}${esc(cmd.title)}</div>`;
+
+      const ctrl = document.createElement('div');
+      ctrl.className = 'setting-ctrl shortcut-ctrl';
+
+      const combo = Shortcuts.comboFor(cmd.id);
+      const def = Shortcuts.defaultFor(cmd.id);
+      const overridden = cmd.id in overrides;
+
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'shortcut-chip' + (combo ? '' : ' unbound');
+      chip.title = combo ? `Click to rebind "${cmd.title}"` : `Click to set a shortcut for "${cmd.title}"`;
+      this._paintChip(chip, combo);
+
+      const startRecording = () => {
+        chip.classList.add('recording');
+        chip.textContent = 'Press keys…';
+        Shortcuts.beginRecording(cmd.id, (newCombo) => {
+          chip.classList.remove('recording');
+          if (newCombo === null) {
+            // cancelled (Escape) — just rerender this row to restore state
+            this.render();
+            return;
+          }
+          // newCombo may be '' (clear) or a canonical combo
+          Shortcuts.set(cmd.id, newCombo || null);
+          this.render();
+        });
+      };
+      on(chip, 'click', (e) => {
+        e.preventDefault();
+        if (Shortcuts.recording) Shortcuts.cancelRecording();
+        startRecording();
+      });
+
+      ctrl.appendChild(chip);
+
+      if (combo) {
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.className = 'shortcut-btn';
+        clearBtn.textContent = 'Clear';
+        clearBtn.title = 'Unbind this shortcut';
+        on(clearBtn, 'click', () => { Shortcuts.set(cmd.id, null); this.render(); });
+        ctrl.appendChild(clearBtn);
+      }
+
+      if (overridden && def) {
+        const resetBtn = document.createElement('button');
+        resetBtn.type = 'button';
+        resetBtn.className = 'shortcut-btn';
+        resetBtn.textContent = 'Reset';
+        resetBtn.title = `Reset to default (${def})`;
+        on(resetBtn, 'click', () => { Shortcuts.resetToDefault(cmd.id); this.render(); });
+        ctrl.appendChild(resetBtn);
+      }
+
+      wrap.appendChild(label);
+      wrap.appendChild(ctrl);
+      return wrap;
+    },
+
+    _paintChip(chip, combo) {
+      if (!combo) { chip.textContent = 'None'; return; }
+      chip.innerHTML = '';
+      for (const part of combo.split('+')) {
+        const k = document.createElement('span');
+        k.className = 'kbd';
+        k.textContent = part;
+        chip.appendChild(k);
       }
     },
     renderRow(row) {
@@ -1663,10 +2378,17 @@
         ext = 'md';
       } else {
         const ff = Settings.get('fontFamily');
+        const margin = currentPageMarginInches();
+        // Exported HTML carries the same page-break hints the editor uses,
+        // so when the receiver prints or "Save as PDF", the paper pagination
+        // matches what they saw in the editor exactly.
         const html = `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>${esc(title)}</title>
 <style>
-  body { font-family: ${ff}; max-width: 780px; margin: 40px auto; padding: 0 24px; line-height: 1.6; color: #1f1f1f; }
+  @page { size: Letter; margin: ${margin}; }
+  html, body { margin: 0; }
+  body { font-family: ${ff}; line-height: 1.6; color: #1f1f1f; }
+  .doc { max-width: 780px; margin: 40px auto; padding: 0 24px; }
   h1,h2,h3 { font-weight: 500; letter-spacing: -0.01em; }
   blockquote { border-left: 3px solid #8b5cf6; padding: 4px 14px; color: #555; background: #f5f0ff; }
   pre { background: #f3f4f6; padding: 12px; border-radius: 6px; overflow-x: auto; }
@@ -1674,9 +2396,15 @@
   img { max-width: 100%; height: auto; }
   hr { border: none; border-top: 1px solid #ddd; margin: 18px 0; }
   table { border-collapse: collapse; } th, td { border: 1px solid #ddd; padding: 6px 10px; }
+  [data-ve-pagebreak="1"] { break-before: page; page-break-before: always; }
+  @media print {
+    .doc { max-width: none; margin: 0; padding: 0; }
+  }
 </style></head><body>
+<div class="doc">
 <h1>${esc(title)}</h1>
-${cleanEditorHTML()}
+${pagedExportHTML()}
+</div>
 </body></html>`;
         blob = new Blob([html], { type: 'text/html;charset=utf-8' });
         ext = 'html';
@@ -2013,22 +2741,88 @@ ${cleanEditorHTML()}
      ============================================================ */
 
   const App = {
+    // Suppress pushState while we apply a popstate — otherwise we'd pollute
+    // the history stack when reacting to a back/forward event.
+    _applyingRoute: false,
+
     init() {
       // Back-to-hub chip in the editor topbar
       on($('#btn-hub'), 'click', () => this.showHub());
+      // Browser back/forward: re-apply the URL-driven view.
+      on(window, 'popstate', () => this._applyRoute(location.hash, { push: false }));
     },
 
     isHub() { return document.body.getAttribute('data-view') === 'hub'; },
+
+    // --- Routing ------------------------------------------------------------
+    // Hash forms:
+    //   #/hub               → Hub view
+    //   #/doc/<docId>       → Editor view on that document
+    _parseHash(hash) {
+      const h = String(hash || '').replace(/^#/, '');
+      if (!h || h === '/' || h === '/hub') return { view: 'hub' };
+      const m = h.match(/^\/doc\/(.+)$/);
+      if (m) return { view: 'doc', id: decodeURIComponent(m[1]) };
+      return { view: 'hub' };
+    },
+    _hashFor(route) {
+      if (!route) return '#/hub';
+      return route.view === 'doc' && route.id
+        ? `#/doc/${encodeURIComponent(route.id)}`
+        : '#/hub';
+    },
+    _pushRoute(route, replace = false) {
+      if (this._applyingRoute) return;
+      const url = this._hashFor(route);
+      if (location.hash === url && !replace) return;
+      try {
+        if (replace) history.replaceState(route, '', url);
+        else         history.pushState(route, '', url);
+      } catch { /* some environments disallow pushState with file:// */ }
+    },
+    // Apply the route to the UI. Called on init and on popstate. When
+    // `push` is true we also update the history stack.
+    _applyRoute(hash, opts = { push: true }) {
+      const route = this._parseHash(hash);
+      this._applyingRoute = true;
+      try {
+        if (route.view === 'doc') {
+          const doc = Docs.all.find(d => d.id === route.id);
+          if (doc) {
+            if (Docs.currentId !== doc.id) Docs.switchTo(doc.id);
+            document.body.setAttribute('data-view', 'editor');
+            setTimeout(() => Editor.el && Editor.el.focus(), 30);
+            if (opts.push) this._pushRoute(route, true);
+            return;
+          }
+          // Fall through to hub if the referenced doc is gone.
+        }
+        Docs.saveCurrent();
+        document.body.setAttribute('data-view', 'hub');
+        Hub.show();
+        if (opts.push) this._pushRoute({ view: 'hub' }, true);
+      } finally {
+        this._applyingRoute = false;
+      }
+    },
+    // Called once during init() after state is hydrated — choose the
+    // initial view from the URL hash so refreshes stay put.
+    restoreRoute() {
+      this._applyRoute(location.hash, { push: true });
+    },
 
     showHub() {
       Docs.saveCurrent();                              // flush so previews reflect latest
       document.body.setAttribute('data-view', 'hub');
       Hub.show();
+      this._pushRoute({ view: 'hub' });
     },
 
     enterEditor() {
       document.body.setAttribute('data-view', 'editor');
       setTimeout(() => Editor.el && Editor.el.focus(), 30);
+      const id = Docs.currentId;
+      if (id) this._pushRoute({ view: 'doc', id });
     },
 
     openDoc(id) {
@@ -2260,30 +3054,211 @@ ${cleanEditorHTML()}
      17. Shortcuts + global key handling
      ============================================================ */
 
-  function handleKeydown(e) {
-    // Slash menu key handling first
-    if (Slash.keydown(e)) return;
+  // Canonicalize a combo string so "ctrl+b", "Ctrl + B", "Meta+b" all
+  // compare equal. Order is fixed: Ctrl, Alt, Shift, <key>.
+  function canonicalCombo(raw) {
+    if (!raw) return '';
+    const parts = String(raw).split('+').map(s => s.trim()).filter(Boolean);
+    let ctrl = false, alt = false, shift = false;
+    let key = '';
+    for (const p of parts) {
+      const low = p.toLowerCase();
+      if (low === 'ctrl' || low === 'control' || low === 'cmd' || low === 'meta' || low === 'command') ctrl = true;
+      else if (low === 'alt' || low === 'option') alt = true;
+      else if (low === 'shift') shift = true;
+      else key = p.length === 1 ? p.toUpperCase() : (p[0].toUpperCase() + p.slice(1));
+    }
+    if (!key) return '';
+    const out = [];
+    if (ctrl)  out.push('Ctrl');
+    if (alt)   out.push('Alt');
+    if (shift) out.push('Shift');
+    out.push(key);
+    return out.join('+');
+  }
+
+  // Build a canonical combo from a KeyboardEvent. Returns '' for
+  // non-shortcut keypresses (bare printable chars, or lone modifiers).
+  function comboFromEvent(e) {
+    const k = e.key;
+    if (!k) return '';
+    if (k === 'Control' || k === 'Shift' || k === 'Alt' || k === 'Meta') return '';
 
     const mod = e.ctrlKey || e.metaKey;
+    const alt = e.altKey;
+    const shift = e.shiftKey;
+    const isFn = /^F\d{1,2}$/.test(k);
 
-    if (mod && e.shiftKey && (e.key === 'P' || e.key === 'p')) {
-      e.preventDefault(); Palette.open(); return;
-    }
-    if (!mod) return;
+    // Ignore bare printable keys — otherwise typing letters would fire commands.
+    // Allow: function keys (F1-F12) with no modifiers, or any key with Ctrl/Meta/Alt.
+    if (!mod && !alt && !isFn) return '';
 
-    const k = e.key.toLowerCase();
-    if (k === 's')             { e.preventDefault(); Export.download('html'); }
-    else if (k === 'k')        { e.preventDefault(); UI.insertLink(); }
-    else if (k === 'f')        { e.preventDefault(); Find.toggle(true); }
-    else if (k === 'p')        { e.preventDefault(); window.print(); }
-    else if (k === '/')        { e.preventDefault(); Palette.open(); }
-    else if (e.altKey && ['1','2','3'].includes(e.key)) {
-      e.preventDefault(); Editor.exec('formatBlock', `<H${e.key}>`);
+    let key = k;
+    if (key === ' ') key = 'Space';
+    else if (key.length === 1) key = key.toUpperCase();
+    // else keep as-is (Enter, Escape, ArrowUp, F1, /, etc.)
+
+    const parts = [];
+    if (mod)   parts.push('Ctrl');
+    if (alt)   parts.push('Alt');
+    if (shift) parts.push('Shift');
+    parts.push(key);
+    return parts.join('+');
+  }
+
+  const Shortcuts = {
+    // combo (canonical) -> commandId
+    bindings: {},
+    // commandId -> combo
+    cmdToCombo: {},
+    // When non-null, Settings UI is capturing the next keypress as a new binding.
+    // Shape: { cmdId, resolve(combo|null) }
+    recording: null,
+
+    // Build the live binding table from registered command defaults + user overrides.
+    rebuild() {
+      const bindings = {};
+      const cmdToCombo = {};
+      const overrides = Settings.get('shortcuts') || {};
+
+      // 1. User overrides win outright.
+      for (const id of Object.keys(overrides)) {
+        const raw = overrides[id];
+        if (!raw) continue;             // null/'' = explicitly unbound
+        const c = canonicalCombo(raw);
+        if (!c) continue;
+        bindings[c] = id;
+        cmdToCombo[id] = c;
+      }
+      // 2. Defaults fill in wherever the user hasn't spoken and the slot is free.
+      for (const cmd of Commands.list) {
+        if (cmd.id in overrides) continue;   // user made a choice (even if null)
+        if (!cmd.shortcut) continue;
+        const c = canonicalCombo(cmd.shortcut);
+        if (!c || bindings[c]) continue;
+        bindings[c] = cmd.id;
+        cmdToCombo[cmd.id] = c;
+      }
+      this.bindings = bindings;
+      this.cmdToCombo = cmdToCombo;
+    },
+
+    // Current combo for a command (user override if present, else default).
+    comboFor(id) {
+      return this.cmdToCombo[id] || '';
+    },
+    defaultFor(id) {
+      const cmd = Commands.byId[id];
+      return cmd && cmd.shortcut ? canonicalCombo(cmd.shortcut) : '';
+    },
+
+    // Assign a new combo to a command. Pass null to unbind. Automatically
+    // steals the combo from any other command that currently holds it.
+    set(id, combo) {
+      const overrides = { ...(Settings.get('shortcuts') || {}) };
+      const c = combo ? canonicalCombo(combo) : null;
+
+      if (c) {
+        // Kick any conflicting user override off this combo.
+        for (const k of Object.keys(overrides)) {
+          if (k === id) continue;
+          const existing = overrides[k] ? canonicalCombo(overrides[k]) : '';
+          if (existing === c) overrides[k] = null;
+        }
+        // Kick any default-bound command off this combo by explicitly unbinding it.
+        for (const cmd of Commands.list) {
+          if (cmd.id === id) continue;
+          if (cmd.id in overrides) continue;
+          if (cmd.shortcut && canonicalCombo(cmd.shortcut) === c) {
+            overrides[cmd.id] = null;
+          }
+        }
+      }
+
+      // If the new value equals the registered default, clear the override entry
+      // so "reset to default" stays idempotent.
+      const def = this.defaultFor(id);
+      if (c && c === def) delete overrides[id];
+      else overrides[id] = c;   // c may be null (unbound)
+
+      Settings.set('shortcuts', overrides);
+      this.rebuild();
+    },
+
+    resetToDefault(id) {
+      const overrides = { ...(Settings.get('shortcuts') || {}) };
+      delete overrides[id];
+      Settings.set('shortcuts', overrides);
+      this.rebuild();
+    },
+
+    // Called from the global keydown handler. Returns true if dispatched.
+    dispatch(e) {
+      // Recording mode: capture the combo instead of firing. Must run BEFORE the
+      // "modifier required" filter — Esc/Backspace and bare Fn keys are allowed.
+      if (this.recording) {
+        const k = e.key;
+        // Ignore lone modifier keys — wait for the real key.
+        if (k === 'Control' || k === 'Shift' || k === 'Alt' || k === 'Meta') return false;
+        e.preventDefault();
+        e.stopPropagation();
+        if (k === 'Escape')    { this._resolveRecording(null, true); return true; }
+        if (k === 'Backspace') { this._resolveRecording('', false); return true; }
+        // Build a combo even for bare keys (lets the user bind e.g. F5, Enter).
+        const parts = [];
+        if (e.ctrlKey || e.metaKey) parts.push('Ctrl');
+        if (e.altKey)               parts.push('Alt');
+        if (e.shiftKey)             parts.push('Shift');
+        let key = k;
+        if (key === ' ') key = 'Space';
+        else if (key.length === 1) key = key.toUpperCase();
+        parts.push(key);
+        this._resolveRecording(parts.join('+'), false);
+        return true;
+      }
+
+      const combo = comboFromEvent(e);
+      if (!combo) return false;
+
+      // Don't fire shortcuts from inside an open overlay's inputs —
+      // the palette/settings/find sheets own their own keys.
+      const ae = document.activeElement;
+      if (ae && ae.closest && ae.closest('.overlay:not([hidden]) input, .overlay:not([hidden]) textarea, .overlay:not([hidden]) select')) {
+        return false;
+      }
+
+      const id = this.bindings[combo];
+      if (!id) return false;
+      e.preventDefault();
+      Commands.run(id);
+      return true;
+    },
+
+    // -- Recording API used by Settings UI ------------------------------------
+    beginRecording(cmdId, onResolve) {
+      // onResolve(combo)  — combo is '' for unbound, null for "cancelled"
+      this.recording = { cmdId, onResolve };
+    },
+    cancelRecording() {
+      if (!this.recording) return;
+      this._resolveRecording(null, true);
+    },
+    _resolveRecording(combo, cancelled) {
+      const r = this.recording;
+      this.recording = null;
+      if (!r) return;
+      try { r.onResolve(cancelled ? null : combo); }
+      catch (e) { console.warn('shortcut recorder callback failed', e); }
     }
-    else if (e.altKey && e.key === '0') {
-      e.preventDefault(); Editor.exec('formatBlock', '<P>');
-    }
-    else if (k === 'd')        { e.preventDefault(); App.newBlank(); }
+  };
+
+  function handleKeydown(e) {
+    // Shortcut recorder intercepts everything first.
+    if (Shortcuts.recording) { Shortcuts.dispatch(e); return; }
+    // Slash menu key handling next.
+    if (Slash.keydown(e)) return;
+    // User-configurable shortcuts.
+    Shortcuts.dispatch(e);
   }
 
   /* ============================================================
@@ -2303,7 +3278,7 @@ ${cleanEditorHTML()}
     R({ id: 'fmt.clear',         title: 'Clear formatting', group: 'Format', icon: '✗', run: () => Editor.exec('removeFormat') });
 
     // Blocks
-    R({ id: 'block.p',           title: 'Paragraph',       group: 'Block', icon: '¶', run: () => Editor.exec('formatBlock', '<P>') });
+    R({ id: 'block.p',           title: 'Paragraph',       group: 'Block', icon: '¶', shortcut: 'Ctrl+Alt+0', run: () => Editor.exec('formatBlock', '<P>') });
     R({ id: 'block.h1',          title: 'Heading 1',       group: 'Block', icon: 'H1', shortcut: 'Ctrl+Alt+1', run: () => Editor.exec('formatBlock', '<H1>') });
     R({ id: 'block.h2',          title: 'Heading 2',       group: 'Block', icon: 'H2', shortcut: 'Ctrl+Alt+2', run: () => Editor.exec('formatBlock', '<H2>') });
     R({ id: 'block.h3',          title: 'Heading 3',       group: 'Block', icon: 'H3', shortcut: 'Ctrl+Alt+3', run: () => Editor.exec('formatBlock', '<H3>') });
@@ -2333,6 +3308,7 @@ ${cleanEditorHTML()}
     R({ id: 'doc.new',           title: 'New blank document', group: 'Doc', icon: '+', shortcut: 'Ctrl+D', run: () => App.newBlank() });
     R({ id: 'doc.open',          title: 'Open file…',      group: 'Doc', icon: '📂', run: () => $('#file-input').click() });
     R({ id: 'doc.dup',           title: 'Duplicate document', group: 'Doc', icon: '⎘', run: () => App.duplicate() });
+    R({ id: 'doc.page-setup',    title: 'Page setup…',         group: 'Doc', icon: '▭', keywords: 'margins paper size letter', run: () => PageSetup.open() });
     R({ id: 'doc.preset.save',   title: 'Save settings to this document', group: 'Doc', icon: '◆', run: () => Docs.savePresetFromCurrentSettings() });
     R({ id: 'doc.preset.clear',  title: 'Clear document preset', group: 'Doc', icon: '◇', run: () => Docs.clearPreset() });
     R({ id: 'doc.rename',        title: 'Rename document', group: 'Doc', run: () => { const n = prompt('New name:', Editor.titleEl.value); if (n) { Editor.titleEl.value = n; Editor.scheduleSave(); } } });
@@ -2345,7 +3321,9 @@ ${cleanEditorHTML()}
     // View / UI
     R({ id: 'view.settings',     title: 'Open settings',   group: 'View', icon: '⚙', run: () => SettingsUI.open() });
     R({ id: 'view.bg',           title: 'Change background', group: 'View', icon: '🖼', run: () => Background.open() });
-    R({ id: 'view.focus',        title: 'Toggle focus mode', group: 'View', icon: '◰', run: () => UI.toggleFocus() });
+    R({ id: 'view.focus',        title: 'Toggle focus mode', group: 'View', icon: '◰', shortcut: 'F11', run: () => UI.toggleFocus() });
+    R({ id: 'view.palette',      title: 'Open command palette', group: 'View', icon: '⌘', shortcut: 'Ctrl+Shift+P', run: () => Palette.open() });
+    R({ id: 'view.palette2',     title: 'Open command palette (alt)', group: 'View', icon: '⌘', shortcut: 'Ctrl+/', run: () => Palette.open() });
     R({ id: 'view.theme',        title: 'Toggle theme',    group: 'View', icon: '☾', run: () => $('#btn-theme').click() });
     R({ id: 'view.find',         title: 'Find & replace',  group: 'View', icon: '🔍', shortcut: 'Ctrl+F', run: () => Find.toggle(true) });
     R({ id: 'view.zoomIn',       title: 'Zoom in',         group: 'View', icon: '+', run: () => Settings.set('zoom', Math.min(200, Settings.get('zoom') + 10)) });
@@ -2463,14 +3441,16 @@ ${cleanEditorHTML()}
 
     // 4. Re-apply settings, background, and load current (or welcome) doc.
     Settings.apply();
+    if (typeof Shortcuts !== 'undefined' && Commands.list.length) Shortcuts.rebuild();
     Background.loadSaved();
     const doc = Docs.ensureCurrent();
     Editor.load(doc);
     Docs.updateDocCount();
 
-    // 5. Update the profile button avatars and land on the hub.
+    // 5. Update the profile button avatars and re-apply the current route
+    //    (so a refresh under the new account preserves view context).
     ProfileMenu.renderButtons();
-    App.showHub();
+    App._applyRoute(location.hash, { push: false });
   }
 
   async function init() {
@@ -2509,6 +3489,7 @@ ${cleanEditorHTML()}
     UI.init();
     Palette.init();
     SettingsUI.init();
+    PageSetup.init();
     Find.init();
     TablePicker.init();
     Hub.init();
@@ -2548,11 +3529,11 @@ ${cleanEditorHTML()}
     // Global keydown
     on(document, 'keydown', handleKeydown);
     on(document, 'keydown', (e) => {
-      if (e.key === 'F11') { e.preventDefault(); UI.toggleFocus(); }
       if (e.key === 'Escape') {
         if (!$('#overlay-palette').hidden) Palette.close();
         if (!$('#overlay-settings').hidden) SettingsUI.close();
         if (!$('#overlay-background').hidden) Background.close();
+        if (!$('#overlay-page-setup').hidden) PageSetup.close();
         if (!$('#app-launcher').hidden) AppLauncher.close();
         if (!$('#profile-menu').hidden) ProfileMenu.close();
         // (Hub is now a full-screen view, not a modal — nothing to close on Esc)
@@ -2569,14 +3550,18 @@ ${cleanEditorHTML()}
 
     // Register everything (now that all modules exist)
     registerCommands();
+    // Build the shortcut table from command defaults + user overrides.
+    Shortcuts.rebuild();
 
     // Apply settings + background
     Settings.apply();
     Background.loadSaved();
     Docs.updateDocCount();
 
-    // Land on the hub by default (like Google Docs)
+    // Restore the last view from the URL hash (so refresh stays in the
+    // document if you were editing one, or on the hub otherwise).
     Hub.show();
+    App.restoreRoute();
   }
 
   document.addEventListener('DOMContentLoaded', init);

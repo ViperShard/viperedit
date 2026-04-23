@@ -36,7 +36,7 @@
 
   /* Page (document) */
   --page-bg:     #ffffff;
-  --page-fg:     #1c1c1e;
+  --page-fg:     #000000;
   --page-muted:  #5f6368;
   --page-border: #e6e6ea;
   --page-shadow: 0 30px 80px rgba(18, 28, 60, 0.14),
@@ -47,8 +47,11 @@
   --toolbar-h:    48px;
   --statusbar-h:  34px;
   --page-width:   816px;        /* 8.5in @ 96dpi */
-  --page-pad-y:   96px;         /* 1in */
-  --page-pad-x:   96px;
+  /* Per-side page margins (set by Margins.apply() per document). */
+  --page-pad-top:    96px;
+  --page-pad-right:  96px;
+  --page-pad-bottom: 96px;
+  --page-pad-left:   96px;
 
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
              "Inter", system-ui, "Segoe UI", Roboto, sans-serif;
@@ -60,10 +63,13 @@
 }
 
 /* ---------- Paper (light) page variants ---------- */
-body[data-page="paper"]  { --page-bg: #fbfbfd; --page-fg: #1c1c1e; }
-body[data-page="sepia"]  { --page-bg: #f4ecd8; --page-fg: #4a3a1f; }
-body[data-page="glass"]  { --page-bg: rgba(255,255,255,0.12); --page-fg: #f2f2f7; --page-border: rgba(255,255,255,0.18); }
-body[data-page="dark"]   { --page-bg: #1e1e22; --page-fg: #e8eaed; --page-border: rgba(255,255,255,0.08); }
+body[data-page="paper"]  { --page-bg: #ffffff; --page-fg: #000000; }
+body[data-page="sepia"]  { --page-bg: #f4ecd8; --page-fg: #3a2d14; }
+body[data-page="glass"]  { --page-bg: rgba(255,255,255,0.62); --page-fg: #000000; --page-border: rgba(255,255,255,0.35); }
+body[data-page="dark"]   { --page-bg: #1e1e22; --page-fg: #f5f5f7; --page-border: rgba(255,255,255,0.08); }
+/* In dark UI mode the translucent glass page sits over a near-black wallpaper,
+   so keep the text readable by flipping to a light foreground. */
+[data-theme="dark"] body[data-page="glass"] { --page-fg: #f5f5f7; }
 
 /* ---------- Dark UI mode (alternative) ---------- */
 [data-theme="dark"] {
@@ -450,6 +456,7 @@ html.theme-switching *::after {
 .tb-select option { background: #ffffff; color: var(--fg); }
 .tb-select optgroup { background: #f5f6fa; color: var(--fg-muted); font-weight: 600; }
 
+/* Legacy .tb-color label (still used if something references it). */
 .tb-color {
   position: relative;
   display: inline-flex;
@@ -484,6 +491,108 @@ html.theme-switching *::after {
   border-radius: 2px;
   pointer-events: none;
 }
+
+/* New dropdown-style color control (text color + highlight). */
+.tb-colordd {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+}
+.tb-colordd-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 5px 0 6px;
+  height: 30px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: background 0.12s;
+}
+.tb-colordd-btn:hover { background: var(--glass-bg-strong); }
+.tb-colordd-label {
+  display: inline-block;
+  min-width: 14px;
+  text-align: center;
+  line-height: 1;
+}
+.tb-colordd-bar {
+  position: absolute;
+  left: 6px;
+  right: 16px;
+  bottom: 4px;
+  height: 3px;
+  border-radius: 2px;
+  pointer-events: none;
+}
+.tb-colordd-caret {
+  opacity: 0.55;
+  margin-left: 2px;
+}
+
+/* Shared color popup */
+.color-popup {
+  position: fixed;
+  z-index: var(--z-popup);
+  min-width: 212px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  animation: pop-in 0.12s ease-out;
+}
+.cp-none,
+.cp-custom {
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: background 0.1s;
+}
+.cp-none:hover,
+.cp-custom:hover { background: var(--glass-bg-strong); }
+.cp-none::before {
+  content: "";
+  display: inline-block;
+  width: 18px; height: 18px;
+  border: 1px solid var(--glass-border-strong);
+  border-radius: 3px;
+  background:
+    linear-gradient(to top right,
+      transparent 46%, #d33 46% 54%, transparent 54%),
+    #fff;
+}
+.cp-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 18px);
+  gap: 4px;
+  padding: 2px;
+}
+.cp-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 3px;
+  border: 1px solid rgba(0,0,0,0.15);
+  cursor: pointer;
+  outline: none;
+  transition: transform 0.08s;
+}
+.cp-swatch:hover { transform: scale(1.12); border-color: var(--fg); }
+[data-theme="dark"] .cp-swatch { border-color: rgba(255,255,255,0.2); }
 
 .zoom-val {
   font-size: 11px;
@@ -582,57 +691,24 @@ html.theme-switching *::after {
 [data-theme="dark"] .stage::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); }
 [data-theme="dark"] .stage::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
 
-/* The .page is just a positioning wrapper. Individual .paper panels
-   carry their own shadow, background, and border-radius so the gap
-   between them shows the wallpaper — true Google-Docs-style pagination. */
+/* The .page is a plain positioning wrapper around the editor's vertical
+   stack of .paper sections. Each paper is its own physical sheet, with
+   the text actually nested inside it — not floating on top. */
 .page {
   position: relative;
   width: var(--page-width);
-  min-height: calc(11 * 96px);
   transform-origin: top center;
   transition: transform 0.15s;
 }
 
-/* Vertical stack of distinct paper panels with real gaps between them. */
-.paper-stack {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 24px;                         /* space between pages */
-  pointer-events: none;
-}
-.paper {
-  width: 100%;
-  height: calc(11 * 96px);           /* 1056px — US Letter @ 96dpi */
-  flex-shrink: 0;
-  background: var(--page-bg);
-  color: var(--page-fg);
-  border-radius: 4px;
-  box-shadow: var(--page-shadow);
-  transition: background 0.25s, color 0.25s, box-shadow 0.25s;
-}
-
-/* Glass page variant — each paper independently frosted. */
-body[data-page="glass"] .paper {
-  background: rgba(255, 255, 255, 0.32);
-  backdrop-filter: blur(60px) saturate(200%);
-  -webkit-backdrop-filter: blur(60px) saturate(200%);
-}
-[data-theme="dark"] body[data-page="glass"] .paper {
-  background: rgba(20, 22, 30, 0.42);
-}
-body[data-page="glass"] .editor { color: var(--fg); }
-
-/* The editor sits on top of the paper stack. Its own padding provides
-   the page margins; text flows continuously over page seams. */
+/* The editor IS the paper stack. Papers are direct contenteditable
+   children; text lives inside each paper's padding. */
 .editor {
   position: relative;
-  z-index: 1;
   outline: none;
-  padding: var(--page-pad-y) var(--page-pad-x);
-  min-height: calc(11 * 96px - 2 * var(--page-pad-y));
+  display: flex;
+  flex-direction: column;
+  gap: 24px;                         /* visible wallpaper between pages */
   font-family: var(--font-doc-default);
   font-size: 11pt;
   line-height: 1.55;
@@ -641,7 +717,44 @@ body[data-page="glass"] .editor { color: var(--fg); }
   background: transparent;
 }
 
-.editor:empty::before {
+/* One physical sheet of paper. Height is fixed to US-Letter at 96 dpi so
+   the content area is predictable and pagination can detect overflow via
+   scrollHeight > clientHeight. */
+.paper {
+  /* position: relative makes .paper the offsetParent of its block
+     children. Without this, block.offsetTop is measured against .editor,
+     and the pagination overflow check (which uses paper.clientHeight -
+     padBot) compares numbers from two different coordinate systems. */
+  position: relative;
+  width: 100%;
+  height: calc(11 * 96px);           /* 1056 px — US Letter @ 96 dpi */
+  flex-shrink: 0;
+  padding: var(--page-pad-top) var(--page-pad-right) var(--page-pad-bottom) var(--page-pad-left);
+  background: var(--page-bg);
+  color: var(--page-fg);
+  border-radius: 4px;
+  box-shadow: var(--page-shadow);
+  transition: background 0.25s, color 0.25s, box-shadow 0.25s;
+  box-sizing: border-box;
+  /* Hard clip so anything mid-render can't bleed into the wallpaper gap
+     in the tiny window between an edit and the next pagination pass. */
+  overflow: hidden;
+}
+.paper:focus { outline: none; }
+
+/* Glass page variant — each paper independently frosted. */
+body[data-page="glass"] .paper {
+  background: rgba(255, 255, 255, 0.62);
+  backdrop-filter: blur(60px) saturate(200%);
+  -webkit-backdrop-filter: blur(60px) saturate(200%);
+}
+[data-theme="dark"] body[data-page="glass"] .paper {
+  background: rgba(20, 22, 30, 0.55);
+}
+
+/* Placeholder when the (first) paper has no children yet. */
+.paper:first-child:empty::before,
+.paper:only-child > :first-child:empty::before {
   content: attr(data-placeholder);
   color: var(--fg-soft);
   pointer-events: none;
@@ -940,6 +1053,140 @@ body.focus-mode:hover .statusbar { opacity: 1; pointer-events: auto; }
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--fg-soft);
+}
+.setting-subhint {
+  padding: 0 14px 6px;
+  font-size: 11.5px;
+  color: var(--fg-soft);
+}
+
+/* Shortcut rows in Settings ------------------------------------------------- */
+.shortcut-row .s-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.shortcut-group {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-soft);
+  background: rgba(109, 40, 217, 0.08);
+  border: 1px solid rgba(109, 40, 217, 0.18);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.shortcut-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.shortcut-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 8px;
+  min-width: 90px;
+  justify-content: center;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.shortcut-chip:hover { background: var(--glass-bg-strong); border-color: var(--glass-border-strong); }
+.shortcut-chip.unbound { color: var(--fg-soft); font-style: italic; }
+.shortcut-chip.recording {
+  background: rgba(109, 40, 217, 0.16);
+  border-color: rgba(109, 40, 217, 0.55);
+  color: var(--accent);
+  animation: chip-pulse 1.1s ease-in-out infinite;
+}
+.shortcut-chip .kbd {
+  padding: 1px 6px;
+  background: rgba(15,17,21,0.06);
+  border: 1px solid rgba(15,17,21,0.12);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--fg);
+}
+[data-theme="dark"] .shortcut-chip .kbd {
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.16);
+}
+.shortcut-btn {
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-size: 11.5px;
+  color: var(--fg-soft);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.shortcut-btn:hover { background: var(--glass-bg-strong); color: var(--fg); }
+
+@keyframes chip-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(109, 40, 217, 0.25); }
+  50%      { box-shadow: 0 0 0 4px rgba(109, 40, 217, 0.00); }
+}
+
+/* Page setup modal ---------------------------------------------------------- */
+.page-setup-body { padding: 18px 20px 20px; }
+.ps-hint {
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ps-unit {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  color: var(--fg);
+  font-size: 12px;
+  outline: none;
+}
+.ps-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.ps-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.ps-field input {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--fg);
+  outline: none;
+  font-variant-numeric: tabular-nums;
+}
+.ps-field input:focus { border-color: var(--accent); background: var(--glass-bg-strong); }
+.ps-presets {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.ps-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 /* Toggle switch */
@@ -1679,11 +1926,14 @@ body[data-view="editor"] .view-hub    { display: none !important; }
    ============================================================ */
 
 @media print {
+  /* Margin on the printed paper — matches the editor's "normal" 1in pad.
+     Narrow/wide are overridden by the dynamic <style id="ve-print-page-style">
+     written by Settings.apply(). */
+  @page { size: Letter; margin: 1in; }
   body { background: #fff; color: #000; }
   .bg-layer, .bg-tint, .bg-vignette,
   .topbar, .toolbar, .statusbar, .find-bar,
-  .overlay, .slash-menu, .table-picker,
-  .paper-stack { display: none !important; }     /* real printer handles pagination */
+  .overlay, .slash-menu, .table-picker { display: none !important; }
   .stage { padding: 0; overflow: visible; }
   .page {
     box-shadow: none;
@@ -1693,11 +1943,33 @@ body[data-view="editor"] .view-hub    { display: none !important; }
     overflow: visible;
     background: #fff !important;
     color: #000 !important;
+    transform: none !important;
   }
+  /* The editor is the flat flow container — no gap on print. */
   .editor {
-    padding: 0.75in 1in;
+    display: block !important;
+    gap: 0 !important;
+    padding: 0 !important;
+    min-height: 0;
     background: #fff !important;
     color: #000 !important;
+  }
+  /* Each paper just contributes its content; @page provides the margin. */
+  .editor > .paper {
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    background: #fff !important;
+    color: #000 !important;
+    padding: 0 !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+  /* Every paper after the first starts a fresh print page. */
+  .editor > .paper + .paper {
+    break-before: page;
+    page-break-before: always;
   }
 }
 
@@ -1707,8 +1979,10 @@ body[data-view="editor"] .view-hub    { display: none !important; }
 
 @media (max-width: 1000px) {
   :root {
-    --page-pad-y: 56px;
-    --page-pad-x: 40px;
+    --page-pad-top:    56px;
+    --page-pad-right:  40px;
+    --page-pad-bottom: 56px;
+    --page-pad-left:   40px;
   }
   .page { width: 100%; min-height: auto; }
   .doc-title { max-width: 140px; }

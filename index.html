@@ -149,6 +149,8 @@
           <button data-action="new">New blank document</button>
           <button data-action="open">Open file…</button>
           <hr/>
+          <button data-action="page-setup">Page setup…</button>
+          <hr/>
           <button data-action="download-html">Download as .html</button>
           <button data-action="download-md">Download as .md</button>
           <button data-action="download-txt">Download as .txt</button>
@@ -208,16 +210,20 @@
       <button class="tb-btn tb-tiny" data-cmd="superscript" title="Superscript">x²</button>
       <button class="tb-btn tb-tiny" data-cmd="subscript" title="Subscript">x₂</button>
 
-      <label class="tb-color" title="Text color">
-        <span>A</span>
-        <input type="color" data-cmd="foreColor" value="#1c1c1e" />
-        <span class="tb-color-bar" id="fore-bar" style="background:#1c1c1e"></span>
-      </label>
-      <label class="tb-color" title="Highlight color">
-        <span>H</span>
-        <input type="color" data-cmd="hiliteColor" value="#ffef5c" />
-        <span class="tb-color-bar" id="hilite-bar" style="background:#ffef5c"></span>
-      </label>
+      <div class="tb-colordd" data-cmd="foreColor" title="Text color">
+        <button type="button" class="tb-colordd-btn">
+          <span class="tb-colordd-label">A</span>
+          <span class="tb-colordd-bar" id="fore-bar" style="background:#000000"></span>
+          <svg class="tb-colordd-caret" viewBox="0 0 10 6" width="8" height="5" aria-hidden="true"><path d="M1 1 L5 5 L9 1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="tb-colordd" data-cmd="hiliteColor" title="Highlight color">
+        <button type="button" class="tb-colordd-btn">
+          <span class="tb-colordd-label">H</span>
+          <span class="tb-colordd-bar" id="hilite-bar" style="background:#ffef5c"></span>
+          <svg class="tb-colordd-caret" viewBox="0 0 10 6" width="8" height="5" aria-hidden="true"><path d="M1 1 L5 5 L9 1" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+      </div>
     </div>
 
     <div class="tool-group">
@@ -309,9 +315,6 @@
   <!-- ============================================================ -->
   <main class="stage" id="stage">
     <article class="page" id="page">
-      <div class="paper-stack" id="paper-stack" aria-hidden="true">
-        <div class="paper"></div>
-      </div>
       <div id="editor" class="editor" contenteditable="true" spellcheck="true" role="textbox" aria-multiline="true" aria-label="Document editor"></div>
     </article>
   </main>
@@ -365,6 +368,55 @@
         <button id="btn-settings-close" class="icon-btn">×</button>
       </header>
       <div id="settings-list" class="sheet-body"></div>
+    </div>
+  </div>
+
+  <!-- Color popup (shared between text color + highlight). Positioned
+       dynamically under the trigger that opened it. -->
+  <div id="color-popup" class="color-popup glass-panel" hidden>
+    <button type="button" class="cp-none" data-cp="none"></button>
+    <div class="cp-grid" id="cp-grid"></div>
+    <button type="button" class="cp-custom" data-cp="custom">Custom color…</button>
+    <input type="color" id="cp-hidden" style="position:absolute;opacity:0;pointer-events:none;width:0;height:0;" />
+  </div>
+
+  <!-- Page setup -->
+  <div id="overlay-page-setup" class="overlay" hidden>
+    <div class="sheet glass-panel sheet-sm">
+      <header class="sheet-head">
+        <h2>Page setup</h2>
+        <button id="btn-page-setup-close" class="icon-btn">×</button>
+      </header>
+      <div class="page-setup-body">
+        <p class="ps-hint">Margins for this document, in <select id="ps-unit" class="ps-unit"><option value="in">inches</option><option value="cm">centimetres</option></select>.</p>
+        <div class="ps-grid">
+          <label class="ps-field">
+            <span>Top</span>
+            <input id="ps-top" type="number" min="0" max="4" step="0.05" />
+          </label>
+          <label class="ps-field">
+            <span>Bottom</span>
+            <input id="ps-bottom" type="number" min="0" max="4" step="0.05" />
+          </label>
+          <label class="ps-field">
+            <span>Left</span>
+            <input id="ps-left" type="number" min="0" max="4" step="0.05" />
+          </label>
+          <label class="ps-field">
+            <span>Right</span>
+            <input id="ps-right" type="number" min="0" max="4" step="0.05" />
+          </label>
+        </div>
+        <div class="ps-presets">
+          <button class="pill-btn" data-ps-preset="narrow">Narrow (0.5)</button>
+          <button class="pill-btn" data-ps-preset="normal">Normal (1)</button>
+          <button class="pill-btn" data-ps-preset="wide">Wide (1.33)</button>
+        </div>
+        <div class="ps-actions">
+          <button class="pill-btn" id="btn-ps-default">Reset to default</button>
+          <button class="pill-btn pill-btn-primary" id="btn-ps-apply">Apply</button>
+        </div>
+      </div>
     </div>
   </div>
 
