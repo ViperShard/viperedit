@@ -1447,14 +1447,54 @@
     },
 
     _apply(cmd, value) {
-      const had = this._restoreSelection();
-      if (!had) Editor.el.focus();
-      // "None" semantics:
-      //   - hiliteColor: set transparent and strip any existing
-      //     background-color in the selection so the yellow can't linger
-      //     under a nested span.
-      //   - foreColor:   set the page's default body foreground (black)
-      //     and strip any explicit `color` on descendants of the selection.
+      // 1. Make sure the editor is focused and selection is inside it.
+      //    preventDefault on mousedown usually keeps the live selection
+      //    intact, but savedRange is a fallback if something else stole
+      //    focus.
+      let sel = window.getSelection();
+      const selInEditor = sel && sel.rangeCount &&
+        Editor.el.contains(sel.getRangeAt(0).startContainer);
+      if (!selInEditor) {
+        Editor.el.focus();
+        if (this._savedRange) {
+          sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(this._savedRange);
+        }
+      }
+      sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return;
+      const r = sel.getRangeAt(0);
+
+      // 2. Collapsed cursor (no text selected) — insert a styled span
+      //    seeded with a zero-width placeholder and move the caret
+      //    inside it, so the user's next keystroke types in the
+      //    chosen color. This is how Google Docs' "click a color
+      //    first, then start typing" flow works.
+      if (r.collapsed && value !== null) {
+        this._insertPendingColorSpan(cmd, value);
+        this._paintTriggerBar(cmd, value);
+        UI.refreshToolbar();
+        Editor.scheduleSave();
+        Editor.updateCounts();
+        Pagination.schedule();
+        return;
+      }
+
+      // 3. "None" with a collapsed cursor: exit the colored span the
+      //    cursor is currently inside (if any) by moving the caret to
+      //    just after that span, so the next keystroke is uncolored.
+      if (r.collapsed && value === null) {
+        this._exitStyleSpanAtCaret(cmd);
+        this._paintTriggerBar(cmd, value);
+        UI.refreshToolbar();
+        Editor.scheduleSave();
+        Editor.updateCounts();
+        Pagination.schedule();
+        return;
+      }
+
+      // 4. Non-empty selection — apply via execCommand as before.
       if (value === null) {
         if (cmd === 'hiliteColor') {
           document.execCommand('hiliteColor', false, 'transparent');
@@ -1467,18 +1507,75 @@
       } else {
         document.execCommand(cmd, false, value);
       }
-      // Update the trigger's color bar to reflect the chosen color.
-      if (this._currentTrigger) {
-        const bar = this._currentTrigger.querySelector('.tb-colordd-bar');
-        if (bar) bar.style.background =
-          value === null
-            ? (cmd === 'hiliteColor' ? 'transparent' : '#000000')
-            : value;
-      }
+      this._paintTriggerBar(cmd, value);
       UI.refreshToolbar();
       Editor.scheduleSave();
       Editor.updateCounts();
       Pagination.schedule();
+    },
+
+    _paintTriggerBar(cmd, value) {
+      if (!this._currentTrigger) return;
+      const bar = this._currentTrigger.querySelector('.tb-colordd-bar');
+      if (!bar) return;
+      bar.style.background =
+        value === null
+          ? (cmd === 'hiliteColor' ? 'transparent' : '#000000')
+          : value;
+    },
+
+    // Insert <span style="color:X">​</span> (or background-color for
+    // hiliteColor) at the caret, and move the caret inside the span so
+    // typing inherits the style. The zero-width space is a "landing
+    // character" — Chrome won't place a caret inside a truly empty
+    // inline element.
+    _insertPendingColorSpan(cmd, value) {
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return;
+      const r = sel.getRangeAt(0);
+      const span = document.createElement('span');
+      if (cmd === 'foreColor')   span.style.color = value;
+      if (cmd === 'hiliteColor') span.style.backgroundColor = value;
+      span.appendChild(document.createTextNode('​'));
+      r.deleteContents();
+      r.insertNode(span);
+      const caret = document.createRange();
+      caret.setStart(span.firstChild, 1);
+      caret.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(caret);
+    },
+
+    // Walk up from the caret looking for an ancestor <span> carrying the
+    // relevant inline style (color for foreColor, background-color for
+    // hiliteColor). If found, move the caret to immediately after that
+    // span so subsequent keystrokes land outside it, uncolored. Any
+    // trailing whitespace we create isn't visible and is cleaned up on
+    // the next edit.
+    _exitStyleSpanAtCaret(cmd) {
+      const prop = cmd === 'hiliteColor' ? 'backgroundColor' : 'color';
+      const sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return;
+      let node = sel.getRangeAt(0).startContainer;
+      if (node.nodeType === 3) node = node.parentNode;
+      let styled = null;
+      while (node && node !== Editor.el) {
+        if (node.tagName === 'SPAN' && node.style && node.style[prop]) {
+          styled = node; break;
+        }
+        node = node.parentNode;
+      }
+      if (!styled) return;
+      // Insert a zero-width space AFTER the styled span so the caret has
+      // a landing spot with no inherited style.
+      const afterNode = document.createTextNode('​');
+      if (styled.nextSibling) styled.parentNode.insertBefore(afterNode, styled.nextSibling);
+      else styled.parentNode.appendChild(afterNode);
+      const caret = document.createRange();
+      caret.setStart(afterNode, 1);
+      caret.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(caret);
     },
 
     // Walk all elements intersected by the current selection and remove
